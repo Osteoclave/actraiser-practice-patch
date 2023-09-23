@@ -22,6 +22,7 @@ incsrc registers.asm
 ; Vanilla constants
 !DMA_CHANNEL_4 = $10
 !JOYPAD_B      = $8000
+!JOYPAD_SELECT = $2000
 !JOYPAD_START  = $1000
 !JOYPAD_UP     = $0800
 !JOYPAD_DOWN   = $0400
@@ -43,7 +44,11 @@ incsrc registers.asm
 !ignoreInput     = $F6
 !equippedMagic   = $02AC
 !rng             = $02D1
+!respawnX        = $032E
+!respawnY        = $0330
 !pauseStatus     = $0332
+!difficulty      = $0349
+!tilemapBG3      = $7FB000
 
 ; Vanilla labels
 PrintText  = $02BF60
@@ -54,17 +59,23 @@ MagicIcons = $06A400
 ; In vanilla, 7E024C-0281 contains the "offering" inventories for each town.
 ; The practice ROM never enters town-building mode, so we can repurpose this
 ; memory safely.
-!menuCursor  = $024C
-!heldButton  = $024E
-!heldCounter = $0250
-!magicIcon   = $0252
-!roomIndex   = $0254
+!menuCursor     = $024C
+!heldButton     = $024E
+!heldCounter    = $0250
+!memoryViewerOn = $0252
+!magicIcon      = $0254
+!currentRoom    = $0256
+!selectedRoom   = $0258
+; "On room load" actions
+!autoHeal  = $025A
+!autoSword = $025B
+!autoEasy  = $025C
 
 ; New constants
 ; Number of items in the various selectable menus.
-!MENU_LENGTH  = 5
+!MENU_LENGTH  = 9
 !MAGIC_LENGTH = 5
-!ROOMS_LENGTH = 48
+!ROOMS_LENGTH = 55
 ; Repeat delay and repeat rate for held buttons.
 !REPEAT_DELAY = 15
 !REPEAT_RATE  = 6
@@ -87,10 +98,26 @@ lda   #$00
 org   $02BE28
 lda   #$1F
 
-; Make the title screen menu only have "START" as an option.
+; Insert new text for the title screen.
+org   $02A9A7
+NewTitleScreenText:
+    db    "> PRACTICE", $0D
+    db    $0D
+    db    $0D
+    db    "  v0.2, 2020-10-16", $0D
+    db    "     by Osteoclave"
+    db    $00
+
+; Force the title screen menu to only have one option. (This normally
+; happens when there's no save data, and only "START" is displayed.)
 org   $02A70D
 nop
 nop
+
+; Print the new text instead of "START" for that one menu option.
+org   $02A711
+lda   #$110B
+ldy.w #NewTitleScreenText
 
 ; Always enter Professional Mode from the title screen menu.
 org   $008040
@@ -124,9 +151,24 @@ org   $02C2DC
 nop
 nop
 
-; Update the fixed string used by the memory viewer.
-org   $02BE99
-db    "X 0000 Y 0000      R 00 F 0000", $00
+; Prevent the Magical Stardust spell from doing double damage.
+; During object creation, if:
+; - The game is in Professional Mode
+; - Certain flags on the new object are clear
+; - The new object's attack power is equal to one
+; Then the new object's attack power is increased to two.
+; The other spells are not affected by this boost: Magical Fire and Magical
+; Aura both have one of the relevant flags set, and Magical Light's attack
+; power is already 2, so it's not eligible.
+; Anyway. Let's add some code to keep the attack power of meteors at one.
+org   $009F7B
+lda   #$FF40
+org   $00FF40
+lda   #$0001
+sta   $002A,x
+lda   #$A0E8
+sta   $0012,x
+jmp   $A0E8
 
 ; Merge the 02/BB4C and 02/BC27 functions.
 ; "JSL $02BB4C" is always followed by "JSL $02BC27", and 02/BB4C is located
@@ -143,6 +185,29 @@ jsl   UpdateMemoryViewer
 org   $008304
 jsl   UpdateMemoryViewer
 
+; When updating the BG3 tilemap in VRAM, include the memory viewer.
+org   $02AF13
+jmp   $C840
+org   $02C840
+; The accumulator is 8-bit and holds the value of $F1 here.
+beq   +
+; If $F1 is nonzero, we're copying the full BG3 tilemap to VRAM. This will
+; copy the memory viewer as well, so we don't need to do anything.
+jmp   $AF16
++
+ldx   !memoryViewerOn
+beq   +
+ldx   #$5B41
+stx   !VMADDL
+ldx   #$B682
+stx   !A1T0L
+ldx   #$003C
+stx   !DAS0L
+lda   #$01
+sta   !MDMAEN
++
+rts
+
 ; Skip the "descending ball of light brings statue to life" animation.
 org   $02AB0D
 stz   $00FC
@@ -150,6 +215,15 @@ stz   $00FC
 ; Replace the existing Start-button pause handler.
 org   $008066
 jsl   NewPauseHandler
+
+; Perform the "on room load" actions when loading a new room.
+org   $00826C
+jsl   OnRoomLoad
+
+; Always use the respawn coordinates if they're set, not just after a death.
+org   $009380
+nop
+nop
 
 ; In the event of player death, respawn on the same map.
 org   $02BD61
@@ -225,6 +299,16 @@ lda   !currentMap
 xba
 jmp   $8796
 
+; When completing an Act on normal difficulty, don't do the score count-up.
+org   $00A205
+nop
+nop
+
+; When completing an Act on normal difficulty, don't return to sim mode.
+org   $00A2CF
+nop
+nop
+
 ; Upon defeating a boss in the boss rush, don't increment the "bosses
 ; defeated in the boss rush" counter. Just reload the current map.
 org   $00FEEC
@@ -233,17 +317,6 @@ xba
 bra   $07
 org   $00FF00
 bra   $05
-
-; Remove the sword upgrade when changing maps.
-org   $008266
-rep   #$20
-lda   !currentMap
-pha
-lda   !changeMap
-xba
-sta   !currentMap
-sep   #$20
-stz   !swordUpgrade
 
 ; Prevent animated tiles from glitching.
 org   $0289E2
@@ -292,54 +365,68 @@ incsrc map_metadata_usa.asm
 
 
 UpdateMemoryViewer:
-    ; The memory viewer wasn't ready yet when v0.1 released.
-    rtl
-    ; The following code was inaccessible but not removed.
-    ; It borrows heavily from the existing debug-mode code.
-    ; See 00/81BE in the vanilla ROM for comparison.
     php
-    rep   #$30
-    phy
-    phx
-    pha
-    sep   #$20
-    ldy   $8A
-    ldx   #$0002
-    lda   $0003,y
-    jsr   PrintByte
-    lda   $0002,y
-    jsr   PrintByte
-    ldx   #$0009
-    lda   $0005,y
-    jsr   PrintByte
-    lda   $0004,y
-    jsr   PrintByte
-    ldx   #$0015
-    lda   !rng
-    jsr   PrintByte
-    ldx   #$001A
-    lda   !frameCounter+1
-    jsr   PrintByte
-    lda   !frameCounter
-    jsr   PrintByte
     rep   #$20
-    lda   #$1A01
-    ldy   #$035D
-    jsl   PrintText
-    pla
-    plx
-    ply
+    lda   !memoryViewerOn
+    beq   +
+    jsr   DrawMemoryViewer
+    +
     plp
     rtl
 
 
 
-PrintByte:
+DrawMemoryViewer:
+    php
+    rep   #$20
+    pha
+    ; Draw the labels if they're absent (e.g. erased by room transition)
+    lda   #$2458
+    cmp   !tilemapBG3+(26<<6)+(1<<1)
+    beq   +
+    sta   !tilemapBG3+(26<<6)+(1<<1)
+    lda   #$2459
+    sta   !tilemapBG3+(26<<6)+(8<<1)
+    lda   #$2452
+    sta   !tilemapBG3+(26<<6)+(20<<1)
+    lda   #$2446
+    sta   !tilemapBG3+(26<<6)+(25<<1)
+    +
+    ; Clear the high byte of the accumulator (DrawByte subtly requires this)
+    and   #$00FF
+    sep   #$20
+    ldy   $8A
+    ; Player's X coordinate
+    ldx.w #3<<1
+    lda   $0003,y
+    jsr   DrawByte
+    lda   $0002,y
+    jsr   DrawByte
+    ; Player's Y coordinate
+    ldx.w #10<<1
+    lda   $0005,y
+    jsr   DrawByte
+    lda   $0004,y
+    jsr   DrawByte
+    ; RNG state
+    ldx.w #22<<1
+    lda   !rng
+    jsr   DrawByte
+    ; Frame counter
+    ldx.w #27<<1
+    lda   !frameCounter+1
+    jsr   DrawByte
+    lda   !frameCounter
+    jsr   DrawByte
+    rep   #$20
+    pla
+    plp
+    rts
+
+
+
+DrawByte:
     phy
-    ; Clear high bits of A
-    xba
-    lda   #$00
-    xba
     ; First digit
     pha
     lsr
@@ -348,16 +435,47 @@ PrintByte:
     lsr
     tay
     lda   $8228,y
-    sta   $035D,x
+    sta   !tilemapBG3+(26<<6),x
+    inx
     inx
     pla
     ; Second digit
     and   #$0F
     tay
     lda   $8228,y
-    sta   $035D,x
+    sta   !tilemapBG3+(26<<6),x
+    inx
     inx
     ply
+    rts
+
+
+
+EraseMemoryViewer:
+    php
+    sep   #$20
+    pha
+    lda   #$00
+    sta   !tilemapBG3+(26<<6)+(1<<1)
+    sta   !tilemapBG3+(26<<6)+(3<<1)
+    sta   !tilemapBG3+(26<<6)+(4<<1)
+    sta   !tilemapBG3+(26<<6)+(5<<1)
+    sta   !tilemapBG3+(26<<6)+(6<<1)
+    sta   !tilemapBG3+(26<<6)+(8<<1)
+    sta   !tilemapBG3+(26<<6)+(10<<1)
+    sta   !tilemapBG3+(26<<6)+(11<<1)
+    sta   !tilemapBG3+(26<<6)+(12<<1)
+    sta   !tilemapBG3+(26<<6)+(13<<1)
+    sta   !tilemapBG3+(26<<6)+(20<<1)
+    sta   !tilemapBG3+(26<<6)+(22<<1)
+    sta   !tilemapBG3+(26<<6)+(23<<1)
+    sta   !tilemapBG3+(26<<6)+(25<<1)
+    sta   !tilemapBG3+(26<<6)+(27<<1)
+    sta   !tilemapBG3+(26<<6)+(28<<1)
+    sta   !tilemapBG3+(26<<6)+(29<<1)
+    sta   !tilemapBG3+(26<<6)+(30<<1)
+    pla
+    plp
     rts
 
 
@@ -419,21 +537,8 @@ PracticeMenu:
     lda   !equippedMagic
     and   #$00FF
     sta   !magicIcon
-    ; Determine the room index from the current map number
-    lda   !currentMap
-    xba
-    ldx   #$0000
-    -
-    cmp   MapNumbers,x
-    beq   +
-    inx
-    inx
-    bra   -
-    +
-    txa
-    lsr
-    tax
-    sta   !roomIndex
+    lda   !currentRoom
+    sta   !selectedRoom
 
     ; Draw the menu
     jsr   DrawMenu
@@ -443,6 +548,25 @@ PracticeMenu:
     jsr   WaitForKeyup
 
 .Loop:
+    ; Practice menu behaviour: Select button
+    lda   #!JOYPAD_SELECT
+    bit   !JOY1L
+    beq   +
+    pha
+    sep   #$20
+    lda   #!DMA_CHANNEL_4
+    trb   !scheduledHDMA
+    rep   #$20
+    jsr   EraseMenu
+    pla
+    jsr   WaitForKeyup
+    sep   #$20
+    lda   #!DMA_CHANNEL_4
+    tsb   !scheduledHDMA
+    rep   #$20
+    jsr   DrawMenu
+    +
+
     ; Practice menu behaviour: Start button
     lda   #!JOYPAD_START
     bit   !JOY1L
@@ -494,7 +618,7 @@ PracticeMenu:
 
 .RestoreHealth:
     cmp.w #1
-    bne   .MagicSelector
+    bne   .ToggleMemoryViewer
     lda   #!JOYPAD_B
     bit   !JOY1L
     beq   +
@@ -509,9 +633,30 @@ PracticeMenu:
     +
     jmp   .NextFrame
 
-.MagicSelector:
+.ToggleMemoryViewer:
     cmp.w #2
-    bne   .RoomSelector
+    bne   .MagicSelector
+    lda   #!JOYPAD_B
+    jsr   CheckButton
+    bcc   ..NoPress
+    lda   !memoryViewerOn
+    bne   ..TurnOff
+..TurnOn:
+    lda   #$0001
+    sta   !memoryViewerOn
+    jsr   DrawMemoryViewer
+    bra   ..Toggled
+..TurnOff:
+    stz   !memoryViewerOn
+    jsr   EraseMemoryViewer
+..Toggled:
+    jmp   .RedrawMenu
+..NoPress:
+    jmp   .NextFrame
+
+.MagicSelector:
+    cmp.w #3
+    bne   .ToggleAutoHeal
 
     ; Magic selector behaviour: Left button
     lda   #!JOYPAD_LEFT
@@ -525,7 +670,7 @@ PracticeMenu:
     +
     sta   !equippedMagic
     rep   #$20
-    bra   .RedrawMenu
+    jmp   .RedrawMenu
     ++
 
     ; Magic selector behaviour: Right button
@@ -541,25 +686,88 @@ PracticeMenu:
     +
     sta   !equippedMagic
     rep   #$20
-    bra   .RedrawMenu
+    jmp   .RedrawMenu
     ++
 
-    bra   .NextFrame
+    jmp   .NextFrame
+
+.ToggleAutoHeal:
+    cmp.w #4
+    bne   .ToggleAutoSword
+    lda   #!JOYPAD_B
+    jsr   CheckButton
+    bcc   ..NoPress
+    sep   #$20
+    lda   !autoHeal
+    bne   ..TurnOff
+..TurnOn:
+    lda   #$01
+    sta   !autoHeal
+    bra   ..Toggled
+..TurnOff:
+    stz   !autoHeal
+..Toggled:
+    rep   #$20
+    jmp   .RedrawMenu
+..NoPress:
+    jmp   .NextFrame
+
+.ToggleAutoSword:
+    cmp.w #5
+    bne   .ToggleAutoEasy
+    lda   #!JOYPAD_B
+    jsr   CheckButton
+    bcc   ..NoPress
+    sep   #$20
+    lda   !autoSword
+    bne   ..TurnOff
+..TurnOn:
+    lda   #$01
+    sta   !autoSword
+    bra   ..Toggled
+..TurnOff:
+    stz   !autoSword
+..Toggled:
+    rep   #$20
+    jmp   .RedrawMenu
+..NoPress:
+    jmp   .NextFrame
+
+.ToggleAutoEasy:
+    cmp.w #6
+    bne   .RoomSelector
+    lda   #!JOYPAD_B
+    jsr   CheckButton
+    bcc   ..NoPress
+    sep   #$20
+    lda   !autoEasy
+    bne   ..TurnOff
+..TurnOn:
+    lda   #$01
+    sta   !autoEasy
+    bra   ..Toggled
+..TurnOff:
+    stz   !autoEasy
+..Toggled:
+    rep   #$20
+    jmp   .RedrawMenu
+..NoPress:
+    jmp   .NextFrame
 
 .RoomSelector:
-    cmp.w #3
+    cmp.w #7
     bne   .LoadSelectedRoom
 
     ; Room selector behaviour: Left button
     lda   #!JOYPAD_LEFT
     jsr   CheckButton
     bcc   ++
-    lda   !roomIndex
+    lda   !selectedRoom
     dec
     bpl   +
     lda.w #!ROOMS_LENGTH-1
     +
-    sta   !roomIndex
+    sta   !selectedRoom
     bra   .RedrawMenu
     ++
 
@@ -567,20 +775,20 @@ PracticeMenu:
     lda   #!JOYPAD_RIGHT
     jsr   CheckButton
     bcc   ++
-    lda   !roomIndex
+    lda   !selectedRoom
     inc
     cmp.w #!ROOMS_LENGTH
     bcc   +
     lda.w #0
     +
-    sta   !roomIndex
+    sta   !selectedRoom
     bra   .RedrawMenu
     ++
 
     bra   .NextFrame
 
 .LoadSelectedRoom:
-    cmp.w #4
+    cmp.w #8
     bne   .NextFrame
     lda   #!JOYPAD_B
     bit   !JOY1L
@@ -590,7 +798,8 @@ PracticeMenu:
     ; we can't use it like we did in ".ResumeGame" above. Instead, we use
     ; the more aggressive "discardInput".
     trb   !discardInput
-    lda   !roomIndex
+    lda   !selectedRoom
+    sta   !currentRoom
     asl
     tax
     lda   MapNumbers,x
@@ -702,6 +911,15 @@ DrawMenu:
     lda   #$0607
     jsl   PrintText
 
+    ; Toggle memory viewer
+    ldy.w #TEXT_MemoryViewerOff
+    lda   !memoryViewerOn
+    beq   +
+    ldy.w #TEXT_MemoryViewerOn
+    +
+    lda   #$0707
+    jsl   PrintText
+
     ; Magic selector
     lda   !equippedMagic
     and   #$00FF
@@ -709,35 +927,70 @@ DrawMenu:
     tax
     lda   MagicDescriptions,x
     tay
-    lda   #$0809
+    lda   #$0909
     jsl   PrintText
     ; Arrows
     ldy.w #TEXT_LeftArrow
-    lda   #$0807
+    lda   #$0907
     jsl   PrintText
     ldy.w #TEXT_RightArrow
-    lda   #$081A
+    lda   #$091A
+    jsl   PrintText
+
+    ; On room load
+    ldy.w #TEXT_OnRoomLoad
+    lda   #$0B07
+    jsl   PrintText
+
+    ; On room load: Auto-recovery
+    ldy.w #TEXT_AutoHealOff
+    lda   !autoHeal
+    and   #$00FF
+    beq   +
+    ldy.w #TEXT_AutoHealOn
+    +
+    lda   #$0C07
+    jsl   PrintText
+
+    ; On room load: Sword upgrade
+    ldy.w #TEXT_AutoSwordOff
+    lda   !autoSword
+    and   #$00FF
+    beq   +
+    ldy.w #TEXT_AutoSwordOn
+    +
+    lda   #$0D07
+    jsl   PrintText
+
+    ; On room load: Difficulty
+    ldy.w #TEXT_AutoEasyOff
+    lda   !autoEasy
+    and   #$00FF
+    beq   +
+    ldy.w #TEXT_AutoEasyOn
+    +
+    lda   #$0E07
     jsl   PrintText
 
     ; Room selector
-    lda   !roomIndex
+    lda   !selectedRoom
     asl
     tax
     lda   RoomDescriptions,x
     tay
-    lda   #$0A09
+    lda   #$1009
     jsl   PrintText
     ; Arrows
     ldy.w #TEXT_LeftArrow
-    lda   #$0B07
+    lda   #$1107
     jsl   PrintText
     ldy.w #TEXT_RightArrow
-    lda   #$0B1A
+    lda   #$111A
     jsl   PrintText
 
     ; Load selected room
     ldy.w #TEXT_LoadSelectedRoom
-    lda   #$0E07
+    lda   #$1407
     jsl   PrintText
 
     ; Cursor
@@ -746,24 +999,49 @@ DrawMenu:
     cmp.w #0
     bne   +
     lda   #$0505
+    bra   .CursorPositioned
     +
     cmp.w #1
     bne   +
     lda   #$0605
+    bra   .CursorPositioned
     +
     cmp.w #2
     bne   +
-    lda   #$0805
+    lda   #$0705
+    bra   .CursorPositioned
     +
     cmp.w #3
     bne   +
-    lda   #$0B05
+    lda   #$0905
+    bra   .CursorPositioned
     +
     cmp.w #4
     bne   +
-    lda   #$0E05
+    lda   #$0C05
+    bra   .CursorPositioned
     +
+    cmp.w #5
+    bne   +
+    lda   #$0D05
+    bra   .CursorPositioned
+    +
+    cmp.w #6
+    bne   +
+    lda   #$0E05
+    bra   .CursorPositioned
+    +
+    cmp.w #7
+    bne   +
+    lda   #$1105
+    bra   .CursorPositioned
+    +
+    cmp.w #8
+    bne   +
+    lda   #$1405
+.CursorPositioned:
     jsl   PrintText
+    +
 
     plb
     rts
@@ -782,6 +1060,108 @@ EraseMenu:
     jsl   PrintText
     plb
     rts
+
+
+
+OnRoomLoad:
+    ; Auto-recovery
+    lda   !autoHeal
+    beq   +
+    lda   !maximumHealth
+    sta   !currentHealth
+    +
+    ; Sword upgrade
+    stz   !swordUpgrade
+    lda   !autoSword
+    beq   +
+    lda   #$FF
+    sta   !swordUpgrade
+    +
+    ; Difficulty
+    stz   !difficulty
+    lda   !autoEasy
+    bne   +
+    inc   !difficulty
+    +
+    ; Customized spawn points
+    rep   #$20
+    ; Clear the respawn coordinates.
+    ; This intentionally overrides normal checkpoint behaviour: if you've
+    ; chosen to play a room from the start, you will respawn at the start
+    ; upon death, even if you passed a checkpoint before dying.
+    ; To restore normal checkpoint behaviour, don't clear the respawn
+    ; coordinates after a death (i.e. when $032C is nonzero).
+    stz   !respawnX
+    stz   !respawnY
+    lda   !currentRoom
+    ; 101 checkpoint
+    cmp.w #1
+    bne   +
+    lda   #$09C0
+    sta   !respawnX
+    lda   #$0170
+    sta   !respawnY
+    bra   .SpawnDone
+    +
+    ; 101 at boss
+    cmp.w #2
+    bne   +
+    lda   #$0E50
+    sta   !respawnX
+    lda   #$02D0
+    sta   !respawnY
+    bra   .SpawnDone
+    +
+    ; 201 checkpoint
+    cmp.w #7
+    bne   +
+    lda   #$08A0
+    sta   !respawnX
+    lda   #$0190
+    sta   !respawnY
+    bra   .SpawnDone
+    +
+    ; 201 at boss
+    cmp.w #8
+    bne   +
+    lda   #$0E20
+    sta   !respawnX
+    lda   #$0170
+    sta   !respawnY
+    bra   .SpawnDone
+    +
+    ; 302 at boss
+    cmp.w #18
+    bne   +
+    lda   #$0920
+    sta   !respawnX
+    lda   #$0210
+    sta   !respawnY
+    bra   .SpawnDone
+    +
+    ; 401 checkpoint
+    cmp.w #24
+    bne   +
+    lda   #$0BD0
+    sta   !respawnX
+    lda   #$0350
+    sta   !respawnY
+    bra   .SpawnDone
+    +
+    ; 603 checkpoint
+    cmp.w #42
+    bne   +
+    lda   #$0550
+    sta   !respawnX
+    lda   #$03F0
+    sta   !respawnY
+    +
+.SpawnDone:
+    sep   #$20
+    ; Execute the instructions we overwrote in order to call this function
+    lda   !changeMap
+    sta   !currentMap+1
+    rtl
 
 
 
@@ -812,23 +1192,24 @@ WaitForKeyup:
 
 WindowData:
     db $27, $FF, $00
-    db $59, $24, $DC
+    db $40, $24, $DC
+    db $49, $24, $DC
     db $01, $FF, $00
     db $00
 
 ; Room-index to map-number mapping.
 MapNumbers:
-    dw $0101
+    dw $0101, $0101, $0101
     dw $0102, $0103, $0104
-    dw $0201
+    dw $0201, $0201, $0201
     dw $0202, $0203, $0204, $0205, $0206, $0207, $0208
-    dw $0301, $0302
+    dw $0301, $0302, $0302
     dw $0303, $0304, $0305, $0306
-    dw $0401, $0402, $0403
+    dw $0401, $0401, $0402, $0403
     dw $0404, $0405, $0406, $0407
     dw $0501, $0502, $0503
     dw $0504, $0505, $0506, $0507, $0508
-    dw $0601, $0602, $0603, $0604
+    dw $0601, $0602, $0603, $0603, $0604
     dw $0605, $0606, $0607, $0608
     dw $0702, $0703, $0704, $0705, $0706, $0707, $0708
 
@@ -842,9 +1223,19 @@ TEXT_ResumeGame:
     db "Resume game", $00
 TEXT_RestoreHealth:
     db "Restore health", $00
+TEXT_MemoryViewerOff:
+    db "Memory viewer is OFF", $00
+TEXT_MemoryViewerOn:
+    db "Memory viewer is ON", $00
 TEXT_LoadSelectedRoom:
     db "Load selected room", $00
 TEXT_EraseAll:
+    db $0B, $16, $0D
+    db $0B, $16, $0D
+    db $0B, $16, $0D
+    db $0B, $16, $0D
+    db $0B, $16, $0D
+    db $0B, $16, $0D
     db $0B, $16, $0D
     db $0B, $16, $0D
     db $0B, $16, $0D
@@ -876,24 +1267,51 @@ TEXT_MagicAura:
 TEXT_MagicLight:
     db "Magical Light", $00
 
+TEXT_OnRoomLoad:
+    db "On room load...", $00
+TEXT_AutoHealOff:
+    db "- Auto-recovery OFF", $00
+TEXT_AutoHealOn:
+    db "- Auto-recovery ON", $00
+TEXT_AutoSwordOff:
+    db "- Sword upgrade OFF", $00
+TEXT_AutoSwordOn:
+    db "- Sword upgrade ON", $00
+TEXT_AutoEasyOff:
+    db "- PRO difficulty", $00
+TEXT_AutoEasyOn:
+    db "- NORMAL difficulty", $00
+
 ; Pointer table for room descriptions.
 RoomDescriptions:
-    dw TEXT_101
+    dw TEXT_101, TEXT_101_CHECKPOINT, TEXT_101_AT_BOSS
     dw TEXT_102, TEXT_103, TEXT_104
-    dw TEXT_201
+    dw TEXT_201, TEXT_201_CHECKPOINT, TEXT_201_AT_BOSS
     dw TEXT_202, TEXT_203, TEXT_204, TEXT_205, TEXT_206, TEXT_207, TEXT_208
-    dw TEXT_301, TEXT_302
+    dw TEXT_301, TEXT_302, TEXT_302_AT_BOSS
     dw TEXT_303, TEXT_304, TEXT_305, TEXT_306
-    dw TEXT_401, TEXT_402, TEXT_403
+    dw TEXT_401, TEXT_401_CHECKPOINT, TEXT_402, TEXT_403
     dw TEXT_404, TEXT_405, TEXT_406, TEXT_407
     dw TEXT_501, TEXT_502, TEXT_503
     dw TEXT_504, TEXT_505, TEXT_506, TEXT_507, TEXT_508
-    dw TEXT_601, TEXT_602, TEXT_603, TEXT_604
+    dw TEXT_601, TEXT_602, TEXT_603, TEXT_603_CHECKPOINT, TEXT_604
     dw TEXT_605, TEXT_606, TEXT_607, TEXT_608
     dw TEXT_702, TEXT_703, TEXT_704, TEXT_705, TEXT_706, TEXT_707, TEXT_708
 
 TEXT_101:
     db "101", $0D
+    db "Forest", $0D
+    db "Centaur Knight"
+    db $00
+
+TEXT_101_CHECKPOINT:
+    db "101 checkpoint", $0D
+    db "Forest", $0D
+    db "Centaur Knight"
+    db $00
+
+TEXT_101_AT_BOSS:
+    db "101 at boss", $0D
     db "Forest", $0D
     db "Centaur Knight"
     db $00
@@ -918,6 +1336,18 @@ TEXT_104:
 
 TEXT_201:
     db "201", $0D
+    db "Swamp", $0D
+    db "Manticore"
+    db $00
+
+TEXT_201_CHECKPOINT:
+    db "201 checkpoint", $0D
+    db "Swamp", $0D
+    db "Manticore"
+    db $00
+
+TEXT_201_AT_BOSS:
+    db "201 at boss", $0D
     db "Swamp", $0D
     db "Manticore"
     db $00
@@ -976,6 +1406,12 @@ TEXT_302:
     db "Dagoba"
     db $00
 
+TEXT_302_AT_BOSS:
+    db "302 at boss", $0D
+    db "Desert II", $0D
+    db "Dagoba"
+    db $00
+
 TEXT_303:
     db "303", $0D
     db "Pyramid I", $0D
@@ -1002,6 +1438,12 @@ TEXT_306:
 
 TEXT_401:
     db "401", $0D
+    db "Mountains I", $0D
+    db "Auto-scroller"
+    db $00
+
+TEXT_401_CHECKPOINT:
+    db "401 checkpoint", $0D
     db "Mountains I", $0D
     db "Auto-scroller"
     db $00
@@ -1108,6 +1550,12 @@ TEXT_603:
     db "Ride the sled"
     db $00
 
+TEXT_603_CHECKPOINT:
+    db "603 checkpoint", $0D
+    db "Arctic III", $0D
+    db "Ride the sled"
+    db $00
+
 TEXT_604:
     db "604", $0D
     db "Arctic IV", $0D
@@ -1181,7 +1629,7 @@ TEXT_708:
     db $00
 
 Credits:
-    db "ActRaiser Practice ROM v0.1", $0D
+    db "ActRaiser Practice ROM v0.2", $0D
     db "Osteoclave", $0D
-    db "2020-10-09"
+    db "2020-10-16"
     db $00

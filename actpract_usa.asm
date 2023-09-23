@@ -53,10 +53,11 @@ incsrc registers.asm
 !tilemapBG3      = $7FB000
 
 ; Vanilla labels
-ShortRandom = $0084C0
-PrintText   = $02BF60
-UpdateHUD   = $02C206
-MagicIcons  = $06A400
+ShortRandom   = $0084C0
+CountdownTick = $02BC82
+PrintText     = $02BF60
+UpdateHUD     = $02C206
+MagicIcons    = $06A400
 
 ; New variables
 ; In vanilla, 7E024C-0281 contains the "offering" inventories for each town.
@@ -65,34 +66,35 @@ MagicIcons  = $06A400
 !menuCursor     = $024C
 !heldButton     = $024E
 !heldCounter    = $0250
-!memoryViewerOn = $0252
+!countdownOff   = $0252
+!memoryViewerOn = $0254
 ; Cached values for the memory viewer
-!cacheXH = $0254
-!cacheXL = $0255
-!cacheYH = $0256
-!cacheYL = $0257
-!cacheR  = $0258
-!cacheFH = $0259
-!cacheIH = $025A
-!cacheIL = $025B
+!cacheXH = $0256
+!cacheXL = $0257
+!cacheYH = $0258
+!cacheYL = $0259
+!cacheR  = $025A
+!cacheFH = $025B
+!cacheIH = $025C
+!cacheIL = $025D
 ; Joypad input bits, sorted for the input viewer
-!inputUDLR = $025C
-!inputEL   = $025E
-!inputTR   = $0260
-!inputBYAX = $0262
+!inputUDLR = $025E
+!inputEL   = $0260
+!inputTR   = $0262
+!inputBYAX = $0264
 ; More new variables
-!magicIcon    = $0264
-!onExitAction = $0266
-!currentRoom  = $0268
-!selectedRoom = $026A
+!magicIcon    = $0266
+!onExitAction = $0268
+!currentRoom  = $026A
+!selectedRoom = $026C
 ; "On room load" actions
-!autoHeal  = $026C
-!autoSword = $026D
-!autoEasy  = $026E
+!autoHeal  = $026E
+!autoSword = $026F
+!autoEasy  = $0270
 
 ; New constants
 ; Number of items in the various selectable menus.
-!MENU_LENGTH    = 10
+!MENU_LENGTH    = 11
 !MAGIC_LENGTH   = 5
 !ON_EXIT_LENGTH = 3
 !ROOMS_LENGTH   = 55
@@ -128,7 +130,7 @@ NewTitleScreenText:
     db    "> PRACTICE", $0D
     db    $0D
     db    $0D
-    db    "  v0.3, 2020-10-23", $0D
+    db    "  v0.4, 2020-10-26", $0D
     db    "     by Osteoclave"
     db    $00
 
@@ -158,6 +160,12 @@ lda   #$39
 org   $0082B1
 nop
 nop
+
+; Take control of the countdown timer.
+org   $0080A0
+jsl   NewCountdownTick
+org   $0080DB
+jsl   NewCountdownTick
 
 ; If you have no magic equipped, display the empty-box icon.
 org   $02BCDB
@@ -468,6 +476,19 @@ warnpc $17F7A2
 ; Updated map metadata: each map now loads all of its required assets.
 org    $1F8000
 incsrc map_metadata_usa.asm
+
+
+
+NewCountdownTick:
+    php
+    rep   #$20
+    lda   !countdownOff
+    bne   +
+    sep   #$20
+    jsl   CountdownTick
+    +
+    plp
+    rtl
 
 
 
@@ -860,7 +881,7 @@ PracticeMenu:
 
 .RestoreHealth:
     cmp.w #1
-    bne   .ToggleMemoryViewer
+    bne   .ToggleCountdown
     lda   #!JOYPAD_B
     bit   !JOY1L
     beq   +
@@ -875,8 +896,27 @@ PracticeMenu:
     +
     jmp   .NextFrame
 
-.ToggleMemoryViewer:
+.ToggleCountdown:
     cmp.w #2
+    bne   .ToggleMemoryViewer
+    lda   #!JOYPAD_B
+    jsr   CheckButton
+    bcc   ..NoPress
+    lda   !countdownOff
+    bne   ..Resume
+..Pause:
+    lda   #$0001
+    sta   !countdownOff
+    bra   ..Toggled
+..Resume:
+    stz   !countdownOff
+..Toggled:
+    jmp   .RedrawMenu
+..NoPress:
+    jmp   .NextFrame
+
+.ToggleMemoryViewer:
+    cmp.w #3
     bne   .MagicSelector
     lda   #!JOYPAD_B
     jsr   CheckButton
@@ -898,7 +938,7 @@ PracticeMenu:
     jmp   .NextFrame
 
 .MagicSelector:
-    cmp.w #3
+    cmp.w #4
     bne   .ToggleAutoHeal
 
     ; Magic selector behaviour: Left button
@@ -935,7 +975,7 @@ PracticeMenu:
     jmp   .NextFrame
 
 .ToggleAutoHeal:
-    cmp.w #4
+    cmp.w #5
     bne   .ToggleAutoSword
     lda   #!JOYPAD_B
     jsr   CheckButton
@@ -956,7 +996,7 @@ PracticeMenu:
     jmp   .NextFrame
 
 .ToggleAutoSword:
-    cmp.w #5
+    cmp.w #6
     bne   .ToggleAutoEasy
     lda   #!JOYPAD_B
     jsr   CheckButton
@@ -977,7 +1017,7 @@ PracticeMenu:
     jmp   .NextFrame
 
 .ToggleAutoEasy:
-    cmp.w #6
+    cmp.w #7
     bne   .OnExitSelector
     lda   #!JOYPAD_B
     jsr   CheckButton
@@ -998,7 +1038,7 @@ PracticeMenu:
     jmp   .NextFrame
 
 .OnExitSelector:
-    cmp.w #7
+    cmp.w #8
     bne   .RoomSelector
 
     ; On-exit selector behaviour: Left button
@@ -1031,7 +1071,7 @@ PracticeMenu:
     jmp   .NextFrame
 
 .RoomSelector:
-    cmp.w #8
+    cmp.w #9
     bne   .LoadSelectedRoom
 
     ; Room selector behaviour: Left button
@@ -1064,7 +1104,7 @@ PracticeMenu:
     bra   .NextFrame
 
 .LoadSelectedRoom:
-    cmp.w #9
+    cmp.w #10
     bne   .NextFrame
     lda   #!JOYPAD_B
     bit   !JOY1L
@@ -1187,13 +1227,22 @@ DrawMenu:
     lda   #$0607
     jsl   PrintText
 
+    ; Toggle countdown
+    ldy.w #TEXT_CountdownRunning
+    lda   !countdownOff
+    beq   +
+    ldy.w #TEXT_CountdownPaused
+    +
+    lda   #$0707
+    jsl   PrintText
+
     ; Toggle memory viewer
     ldy.w #TEXT_MemoryViewerOff
     lda   !memoryViewerOn
     beq   +
     ldy.w #TEXT_MemoryViewerOn
     +
-    lda   #$0707
+    lda   #$0807
     jsl   PrintText
 
     ; Magic selector
@@ -1203,19 +1252,19 @@ DrawMenu:
     tax
     lda   MagicDescriptions,x
     tay
-    lda   #$0909
+    lda   #$0A09
     jsl   PrintText
     ; Arrows
     ldy.w #TEXT_LeftArrow
-    lda   #$0907
+    lda   #$0A07
     jsl   PrintText
     ldy.w #TEXT_RightArrow
-    lda   #$091A
+    lda   #$0A1A
     jsl   PrintText
 
     ; On room load
     ldy.w #TEXT_OnRoomLoad
-    lda   #$0B07
+    lda   #$0C07
     jsl   PrintText
 
     ; On room load: Auto-recovery
@@ -1225,7 +1274,7 @@ DrawMenu:
     beq   +
     ldy.w #TEXT_AutoHealOn
     +
-    lda   #$0C07
+    lda   #$0D07
     jsl   PrintText
 
     ; On room load: Sword upgrade
@@ -1235,7 +1284,7 @@ DrawMenu:
     beq   +
     ldy.w #TEXT_AutoSwordOn
     +
-    lda   #$0D07
+    lda   #$0E07
     jsl   PrintText
 
     ; On room load: Difficulty
@@ -1245,7 +1294,7 @@ DrawMenu:
     beq   +
     ldy.w #TEXT_AutoEasyOn
     +
-    lda   #$0E07
+    lda   #$0F07
     jsl   PrintText
 
     ; On-exit selector
@@ -1254,14 +1303,14 @@ DrawMenu:
     tax
     lda   OnExitDescriptions,x
     tay
-    lda   #$1009
+    lda   #$1109
     jsl   PrintText
     ; Arrows
     ldy.w #TEXT_LeftArrow
-    lda   #$1007
+    lda   #$1107
     jsl   PrintText
     ldy.w #TEXT_RightArrow
-    lda   #$101A
+    lda   #$111A
     jsl   PrintText
 
     ; Room selector
@@ -1270,19 +1319,19 @@ DrawMenu:
     tax
     lda   RoomDescriptions,x
     tay
-    lda   #$1209
+    lda   #$1309
     jsl   PrintText
     ; Arrows
     ldy.w #TEXT_LeftArrow
-    lda   #$1307
+    lda   #$1407
     jsl   PrintText
     ldy.w #TEXT_RightArrow
-    lda   #$131A
+    lda   #$141A
     jsl   PrintText
 
     ; Load selected room
     ldy.w #TEXT_LoadSelectedRoom
-    lda   #$1607
+    lda   #$1707
     jsl   PrintText
 
     ; Cursor
@@ -1305,12 +1354,12 @@ DrawMenu:
     +
     cmp.w #3
     bne   +
-    lda   #$0905
+    lda   #$0805
     bra   .CursorPositioned
     +
     cmp.w #4
     bne   +
-    lda   #$0C05
+    lda   #$0A05
     bra   .CursorPositioned
     +
     cmp.w #5
@@ -1325,17 +1374,22 @@ DrawMenu:
     +
     cmp.w #7
     bne   +
-    lda   #$1005
+    lda   #$0F05
     bra   .CursorPositioned
     +
     cmp.w #8
     bne   +
-    lda   #$1305
+    lda   #$1105
     bra   .CursorPositioned
     +
     cmp.w #9
     bne   +
-    lda   #$1605
+    lda   #$1405
+    bra   .CursorPositioned
+    +
+    cmp.w #10
+    bne   +
+    lda   #$1705
 .CursorPositioned:
     jsl   PrintText
     +
@@ -1606,7 +1660,7 @@ WaitForKeyup:
 WindowData:
     db $27, $FF, $00
     db $40, $24, $DC
-    db $59, $24, $DC
+    db $61, $24, $DC
     db $01, $FF, $00
     db $00
 
@@ -1673,6 +1727,10 @@ TEXT_ResumeGame:
     db "Resume game", $00
 TEXT_RestoreHealth:
     db "Restore health", $00
+TEXT_CountdownRunning:
+    db "Countdown is RUNNING", $00
+TEXT_CountdownPaused:
+    db "Countdown is PAUSED", $00
 TEXT_MemoryViewerOff:
     db "Memory viewer is OFF", $00
 TEXT_MemoryViewerOn:
@@ -1694,6 +1752,7 @@ TEXT_AutoEasyOn:
 TEXT_LoadSelectedRoom:
     db "Load selected room", $00
 TEXT_EraseAll:
+    db $0B, $16, $0D
     db $0B, $16, $0D
     db $0B, $16, $0D
     db $0B, $16, $0D
@@ -2093,7 +2152,7 @@ TEXT_708:
     db $00
 
 Credits:
-    db "ActRaiser Practice ROM v0.3", $0D
+    db "ActRaiser Practice ROM v0.4", $0D
     db "Osteoclave", $0D
-    db "2020-10-23"
+    db "2020-10-26"
     db $00

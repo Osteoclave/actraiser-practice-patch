@@ -46,6 +46,7 @@ incsrc registers.asm
 !ignoreInput     = $F6
 !equippedMagic   = $02AC
 !rng             = $02D1
+!deathFlag       = $032C
 !respawnX        = $032E
 !respawnY        = $0330
 !pauseStatus     = $0332
@@ -87,18 +88,20 @@ MagicIcons    = $06A400
 !onExitAction = $0266
 !currentRoom  = $0268
 !selectedRoom = $026A
+!spcLock      = $026C
 ; "On room load" actions
-!autoRecovery      = $026C
-!autoSwordUpgrade  = $026D
-!autoSimDifficulty = $026E
-!endOfActRefill    = $026F
+!autoSetHealth     = $026D
+!autoSwordUpgrade  = $026E
+!autoSimDifficulty = $026F
+!endOfActRefill    = $0270
 
 ; New constants
 ; Number of items in the various selectable menus.
-!MENU_LENGTH    = 11
-!MAGIC_LENGTH   = 5
-!ON_EXIT_LENGTH = 3
-!ROOMS_LENGTH   = 55
+!MENU_LENGTH        = 11
+!MAGIC_LENGTH       = 5
+!AUTO_HEALTH_LENGTH = 25
+!ON_EXIT_LENGTH     = 3
+!ROOMS_LENGTH       = 55
 ; Number of eligible destinations when the on-exit action is "RANDOM".
 ; This is less than the total number of rooms because we don't want
 ; checkpoints or at-boss spawn points to be eligible destinations.
@@ -131,7 +134,7 @@ NewTitleScreenText:
     db    "> PRACTICE", $0D
     db    $0D
     db    $0D
-    db    "  v0.5, 2020-12-19", $0D
+    db    "  v0.6, 2021-03-15", $0D
     db    "     by Osteoclave"
     db    $00
 
@@ -151,14 +154,31 @@ org   $008040
 nop
 nop
 
+; Use different tiles for "[ACT]" in the upper-left corner.
+; By default "[ACT]" uses tiles 0x22-27, but I want 0x27 to be what it is in
+; ASCII: single quote / apostrophe.
+org   $028E7E
+dw    $0015
+dw    $0016
+dw    $0017
+dw    $0018
+dw    $0019
+dw    $001A
+
 ; Always show 99 lives remaining at the top of the screen.
 org   $02C28E
 lda   #$39
 org   $02C29E
 lda   #$39
 
+; Upon death, don't restore health: "OnRoomLoad" takes care of that now.
+org   $0082AB
+nop
+nop
+
 ; Upon death, don't reduce the number of lives remaining.
-org   $0082B1
+org   $0082B0
+nop
 nop
 nop
 
@@ -270,6 +290,19 @@ org   $02BD61
 nop
 nop
 lda   !currentMap+1
+
+; When fading out the current music in the middle of a stage (e.g. before or
+; after a boss battle), acquire a lock to prevent the practice menu from
+; being opened.
+; We do this because when the practice menu is opened, it sends a command to
+; the SPC700 to pause the currently playing music. Normally that doesn't
+; cause any problems, but when the SPC700 is in the middle of some other
+; communication, an unexpected command can throw things off and cause the
+; game to freeze.
+org   $00A3FE
+jsl   AcquireSpcLock
+org   $00A410
+jsl   ReleaseSpcLock
 
 ; On room exit, load the next room according to the current on-exit action.
 ; 102
@@ -465,6 +498,7 @@ LongRandom:
     rtl
 
 ; Use the modified font.
+; - Moved some characters around to match ASCII
 ; - Erased the leftover Japanese characters from tiles 0x80-FF
 ; - 0x80-8F: Copied the 0-9/A-F characters to simplify the memory viewer
 ; - 0x90-B3: New graphics tiles for the input viewer
@@ -727,6 +761,23 @@ EraseMemoryViewer:
 
 
 
+AcquireSpcLock:
+    sep   #$20
+    lda   #$01
+    sta   !spcLock
+    lda   #$F1
+    rtl
+
+
+
+ReleaseSpcLock:
+    sep   #$20
+    stz   !spcLock
+    lda   #$F1
+    rtl
+
+
+
 NewPauseHandler:
     lda   !pauseStatus
     bmi   .Done
@@ -734,6 +785,9 @@ NewPauseHandler:
     lda   !JOY1H
     bit.b #!JOYPAD_START>>8
     beq   .Done
+    ; Don't open the practice menu if other code has acquired spcLock
+    lda   !spcLock
+    bne   .Done
     ; Open the practice menu
     jsr   PracticeMenu
     rtl
@@ -833,6 +887,12 @@ PracticeMenu:
     sta   !menuCursor
     jmp   .RedrawMenu
     ++
+    ; If the Up button is being held, and we're here because the button is
+    ; in cooldown, skip to the next frame.
+    bit   !JOY1L
+    beq   +
+    jmp   .NextFrame
+    +
 
     ; Practice menu behaviour: Down button
     lda   #!JOYPAD_DOWN
@@ -847,13 +907,19 @@ PracticeMenu:
     sta   !menuCursor
     jmp   .RedrawMenu
     ++
+    ; If the Down button is being held, and we're here because the button is
+    ; in cooldown, skip to the next frame.
+    bit   !JOY1L
+    beq   +
+    jmp   .NextFrame
+    +
 
     ; Menu option behaviour
     lda   !menuCursor
 
 .ResumeGame:
     cmp.w #0
-    bne   .RestoreHealth
+    bne   .AdjustHealth
     lda   #!JOYPAD_B
     bit   !JOY1L
     beq   +
@@ -863,9 +929,11 @@ PracticeMenu:
     +
     jmp   .NextFrame
 
-.RestoreHealth:
+.AdjustHealth:
     cmp.w #1
     bne   .ToggleCountdown
+
+    ; Adjust health behaviour: B button
     lda   #!JOYPAD_B
     bit   !JOY1L
     beq   +
@@ -877,16 +945,51 @@ PracticeMenu:
     jsl   UpdateHUD
     pla
     jsr   WaitForKeyup
+    jmp   .NextFrame
     +
+
+    ; Adjust health behaviour: Left button
+    lda   #!JOYPAD_LEFT
+    jsr   CheckButton
+    bcc   ++
+    sep   #$20
+    lda   !currentHealth
+    cmp   #$02
+    bcc   +
+    dec
+    sta   !currentHealth
+    +
+    rep   #$20
+    jsl   UpdateHUD
+    jmp   .NextFrame
+    ++
+
+    ; Adjust health behaviour: Right button
+    lda   #!JOYPAD_RIGHT
+    jsr   CheckButton
+    bcc   ++
+    sep   #$20
+    lda   !currentHealth
+    cmp   !maximumHealth
+    bcs   +
+    inc
+    sta   !currentHealth
+    +
+    rep   #$20
+    jsl   UpdateHUD
+    ++
+
     jmp   .NextFrame
 
 .ToggleCountdown:
     cmp.w #2
     bne   .ToggleMemoryViewer
     lda   #!JOYPAD_B
-    jsr   CheckButton
-    bcc   ..NoPress
+    bit   !JOY1L
+    beq   ..NoPress
+    pha
     sep   #$20
+    ; 0x00 = Countdown running, 0x01 = Countdown paused
     lda   !countdownOff
     bne   ..Resume
 ..Pause:
@@ -897,7 +1000,10 @@ PracticeMenu:
     stz   !countdownOff
 ..Toggled:
     rep   #$20
-    jmp   .RedrawMenu
+    jsr   EraseMenu
+    jsr   DrawMenu
+    pla
+    jsr   WaitForKeyup
 ..NoPress:
     jmp   .NextFrame
 
@@ -905,9 +1011,11 @@ PracticeMenu:
     cmp.w #3
     bne   .MagicSelector
     lda   #!JOYPAD_B
-    jsr   CheckButton
-    bcc   ..NoPress
+    bit   !JOY1L
+    beq   ..NoPress
+    pha
     sep   #$20
+    ; 0x00 = Memory viewer off, 0x01 = Memory viewer on
     lda   !memoryViewerOn
     bne   ..TurnOff
 ..TurnOn:
@@ -921,13 +1029,16 @@ PracticeMenu:
     jsr   EraseMemoryViewer
 ..Toggled:
     rep   #$20
-    jmp   .RedrawMenu
+    jsr   EraseMenu
+    jsr   DrawMenu
+    pla
+    jsr   WaitForKeyup
 ..NoPress:
     jmp   .NextFrame
 
 .MagicSelector:
     cmp.w #4
-    bne   .ToggleAutoRecovery
+    bne   .AutoSetHealthSelector
 
     ; Magic selector behaviour: Left button
     lda   #!JOYPAD_LEFT
@@ -962,34 +1073,52 @@ PracticeMenu:
 
     jmp   .NextFrame
 
-.ToggleAutoRecovery:
+.AutoSetHealthSelector:
     cmp.w #5
     bne   .ToggleAutoSwordUpgrade
-    lda   #!JOYPAD_B
+
+    ; Auto-set-health selector behaviour: Left button
+    lda   #!JOYPAD_LEFT
     jsr   CheckButton
-    bcc   ..NoPress
+    bcc   ++
     sep   #$20
-    lda   !autoRecovery
-    bne   ..TurnOff
-..TurnOn:
-    lda   #$01
-    sta   !autoRecovery
-    bra   ..Toggled
-..TurnOff:
-    stz   !autoRecovery
-..Toggled:
+    lda   !autoSetHealth
+    dec
+    bpl   +
+    lda.b #!AUTO_HEALTH_LENGTH-1
+    +
+    sta   !autoSetHealth
     rep   #$20
     jmp   .RedrawMenu
-..NoPress:
+    ++
+
+    ; Auto-set-health selector behaviour: Right button
+    lda   #!JOYPAD_RIGHT
+    jsr   CheckButton
+    bcc   ++
+    sep   #$20
+    lda   !autoSetHealth
+    inc
+    cmp.b #!AUTO_HEALTH_LENGTH
+    bcc   +
+    lda.b #0
+    +
+    sta   !autoSetHealth
+    rep   #$20
+    jmp   .RedrawMenu
+    ++
+
     jmp   .NextFrame
 
 .ToggleAutoSwordUpgrade:
     cmp.w #6
     bne   .ToggleAutoSimDifficulty
     lda   #!JOYPAD_B
-    jsr   CheckButton
-    bcc   ..NoPress
+    bit   !JOY1L
+    beq   ..NoPress
+    pha
     sep   #$20
+    ; 0x00 = Sword upgrade off, 0x01 = Sword upgrade on
     lda   !autoSwordUpgrade
     bne   ..TurnOff
 ..TurnOn:
@@ -1000,7 +1129,10 @@ PracticeMenu:
     stz   !autoSwordUpgrade
 ..Toggled:
     rep   #$20
-    jmp   .RedrawMenu
+    jsr   EraseMenu
+    jsr   DrawMenu
+    pla
+    jsr   WaitForKeyup
 ..NoPress:
     jmp   .NextFrame
 
@@ -1008,9 +1140,11 @@ PracticeMenu:
     cmp.w #7
     bne   .OnExitSelector
     lda   #!JOYPAD_B
-    jsr   CheckButton
-    bcc   ..NoPress
+    bit   !JOY1L
+    beq   ..NoPress
+    pha
     sep   #$20
+    ; 0x00 = Pro difficulty, 0x01 = Sim difficulty
     lda   !autoSimDifficulty
     bne   ..TurnOff
 ..TurnOn:
@@ -1021,7 +1155,10 @@ PracticeMenu:
     stz   !autoSimDifficulty
 ..Toggled:
     rep   #$20
-    jmp   .RedrawMenu
+    jsr   EraseMenu
+    jsr   DrawMenu
+    pla
+    jsr   WaitForKeyup
 ..NoPress:
     jmp   .NextFrame
 
@@ -1207,12 +1344,12 @@ DrawMenu:
 
     ; Resume game
     ldy.w #TEXT_ResumeGame
-    lda   #$0507
+    lda   #$0506
     jsl   PrintText
 
-    ; Restore health
-    ldy.w #TEXT_RestoreHealth
-    lda   #$0607
+    ; Adjust health
+    ldy.w #TEXT_AdjustHealth
+    lda   #$0606
     jsl   PrintText
 
     ; Toggle countdown
@@ -1222,7 +1359,7 @@ DrawMenu:
     beq   +
     ldy.w #TEXT_CountdownPaused
     +
-    lda   #$0707
+    lda   #$0706
     jsl   PrintText
 
     ; Toggle memory viewer
@@ -1232,7 +1369,7 @@ DrawMenu:
     beq   +
     ldy.w #TEXT_MemoryViewerOn
     +
-    lda   #$0807
+    lda   #$0806
     jsl   PrintText
 
     ; Magic selector
@@ -1242,29 +1379,22 @@ DrawMenu:
     tax
     lda   MagicDescriptions,x
     tay
-    lda   #$0A09
-    jsl   PrintText
-    ; Arrows
-    ldy.w #TEXT_LeftArrow
-    lda   #$0A07
-    jsl   PrintText
-    ldy.w #TEXT_RightArrow
-    lda   #$0A1A
+    lda   #$0A06
     jsl   PrintText
 
     ; On room load
     ldy.w #TEXT_OnRoomLoad
-    lda   #$0C07
+    lda   #$0C08
     jsl   PrintText
 
-    ; On room load: Auto-recovery
-    ldy.w #TEXT_AutoRecoveryOff
-    lda   !autoRecovery
+    ; On room load: Auto-set-health selector
+    lda   !autoSetHealth
     and   #$00FF
-    beq   +
-    ldy.w #TEXT_AutoRecoveryOn
-    +
-    lda   #$0D07
+    asl
+    tax
+    lda   AutoSetHealthDescriptions,x
+    tay
+    lda   #$0D06
     jsl   PrintText
 
     ; On room load: Sword upgrade
@@ -1274,7 +1404,7 @@ DrawMenu:
     beq   +
     ldy.w #TEXT_AutoSwordUpgradeOn
     +
-    lda   #$0E07
+    lda   #$0E06
     jsl   PrintText
 
     ; On room load: Sim difficulty
@@ -1284,7 +1414,7 @@ DrawMenu:
     beq   +
     ldy.w #TEXT_AutoSimDifficultyOn
     +
-    lda   #$0F07
+    lda   #$0F06
     jsl   PrintText
 
     ; On-exit selector
@@ -1293,14 +1423,7 @@ DrawMenu:
     tax
     lda   OnExitDescriptions,x
     tay
-    lda   #$1109
-    jsl   PrintText
-    ; Arrows
-    ldy.w #TEXT_LeftArrow
-    lda   #$1107
-    jsl   PrintText
-    ldy.w #TEXT_RightArrow
-    lda   #$111A
+    lda   #$1106
     jsl   PrintText
 
     ; Room selector
@@ -1309,19 +1432,12 @@ DrawMenu:
     tax
     lda   RoomDescriptions,x
     tay
-    lda   #$1309
-    jsl   PrintText
-    ; Arrows
-    ldy.w #TEXT_LeftArrow
-    lda   #$1407
-    jsl   PrintText
-    ldy.w #TEXT_RightArrow
-    lda   #$141A
+    lda   #$1306
     jsl   PrintText
 
     ; Load selected room
     ldy.w #TEXT_LoadSelectedRoom
-    lda   #$1707
+    lda   #$1706
     jsl   PrintText
 
     ; Cursor
@@ -1329,57 +1445,57 @@ DrawMenu:
     lda   !menuCursor
     cmp.w #0
     bne   +
-    lda   #$0505
+    lda   #$0504
     bra   .CursorPositioned
     +
     cmp.w #1
     bne   +
-    lda   #$0605
+    lda   #$0604
     bra   .CursorPositioned
     +
     cmp.w #2
     bne   +
-    lda   #$0705
+    lda   #$0704
     bra   .CursorPositioned
     +
     cmp.w #3
     bne   +
-    lda   #$0805
+    lda   #$0804
     bra   .CursorPositioned
     +
     cmp.w #4
     bne   +
-    lda   #$0A05
+    lda   #$0A04
     bra   .CursorPositioned
     +
     cmp.w #5
     bne   +
-    lda   #$0D05
+    lda   #$0D04
     bra   .CursorPositioned
     +
     cmp.w #6
     bne   +
-    lda   #$0E05
+    lda   #$0E04
     bra   .CursorPositioned
     +
     cmp.w #7
     bne   +
-    lda   #$0F05
+    lda   #$0F04
     bra   .CursorPositioned
     +
     cmp.w #8
     bne   +
-    lda   #$1105
+    lda   #$1104
     bra   .CursorPositioned
     +
     cmp.w #9
     bne   +
-    lda   #$1405
+    lda   #$1404
     bra   .CursorPositioned
     +
     cmp.w #10
     bne   +
-    lda   #$1705
+    lda   #$1704
 .CursorPositioned:
     jsl   PrintText
     +
@@ -1397,7 +1513,7 @@ EraseMenu:
     plb
     rep   #$20
     ldy.w #TEXT_EraseAll
-    lda   #$0505
+    lda   #$0504
     jsl   PrintText
     plb
     rts
@@ -1405,21 +1521,7 @@ EraseMenu:
 
 
 OnRoomLoad:
-    ; Sword upgrade
-    stz   !swordUpgrade
-    lda   !autoSwordUpgrade
-    beq   +
-    lda   #$FF
-    sta   !swordUpgrade
-    +
-    ; Sim difficulty
-    lda   #$01
-    sta   !difficulty
-    lda   !autoSimDifficulty
-    beq   +
-    stz   !difficulty
-    +
-    ; Sim max health
+    ; Set max health (varies on Sim difficulty)
     lda.b #24
     sta   !maximumHealth
     lda   !autoSimDifficulty
@@ -1428,29 +1530,71 @@ OnRoomLoad:
     lda   SimMaximumHealthValues,x
     sta   !maximumHealth
     +
+
+    ; If the end-of-Act-refill flag is set, restore all health
+    lda   !endOfActRefill
+    beq   +
+    stz   !endOfActRefill
+    lda   !maximumHealth
+    sta   !currentHealth
+    +
+
+    ; If the room load is happening because of a death, restore all health
+    lda   !deathFlag
+    beq   +
+    lda   !maximumHealth
+    sta   !currentHealth
+    +
+
+    ; If your current health is zero (from loading a new room partway
+    ; through the process of dying), restore all health
+    lda   !currentHealth
+    bne   +
+    lda   !maximumHealth
+    sta   !currentHealth
+    +
+
+    ; Auto-set-health
+    lda   !autoSetHealth
+    beq   +
+    sta   !currentHealth
+    +
+
     ; Make sure current health doesn't exceed maximum health
     lda   !maximumHealth
     cmp   !currentHealth
     bcs   +
     sta   !currentHealth
     +
-    ; If the end-of-Act-refill flag is set, restore all health
-    lda   !endOfActRefill
-    beq   +
-    stz   !endOfActRefill
-    bra   .RestoreAllHealth
+
+    ; Sword upgrade
+    stz   !swordUpgrade
+    ; If we're loading the Serpent boss room on Sim difficulty, enable the
+    ; sword upgrade, independent of the "sword upgrade" setting.
+    rep   #$20
+    lda   !currentRoom
+    cmp.w #26
+    sep   #$20
+    bne   +
+    lda   !autoSimDifficulty
+    bne   .SwordUpgradeOn
     +
-    ; If your current health is zero (from loading a new room partway
-    ; through the process of dying), restore all health
-    lda   !currentHealth
-    beq   .RestoreAllHealth
-    ; Auto-recovery
-    lda   !autoRecovery
+    ; Otherwise, use the "sword upgrade" setting.
+    lda   !autoSwordUpgrade
     beq   +
-.RestoreAllHealth:
-    lda   !maximumHealth
-    sta   !currentHealth
+.SwordUpgradeOn:
+    lda   #$FF
+    sta   !swordUpgrade
     +
+
+    ; Sim difficulty
+    lda   #$01
+    sta   !difficulty
+    lda   !autoSimDifficulty
+    beq   +
+    stz   !difficulty
+    +
+
     ; Customized spawn points
     rep   #$20
     ; Clear the respawn coordinates.
@@ -1458,7 +1602,7 @@ OnRoomLoad:
     ; chosen to play a room from the start, you will respawn at the start
     ; upon death, even if you passed a checkpoint before dying.
     ; To restore normal checkpoint behaviour, don't clear the respawn
-    ; coordinates after a death (i.e. when $032C is nonzero).
+    ; coordinates after a death (i.e. when "deathFlag" is nonzero).
     stz   !respawnX
     stz   !respawnY
     lda   !currentRoom
@@ -1526,6 +1670,7 @@ OnRoomLoad:
     +
 .SpawnDone:
     sep   #$20
+
     ; Execute the instructions we overwrote in order to call this function
     lda   !changeMap
     sta   !currentMap+1
@@ -1710,8 +1855,8 @@ WaitForKeyup:
 
 WindowData:
     db $27, $FF, $00
-    db $40, $24, $DC
-    db $61, $24, $DC
+    db $40, $1C, $E4
+    db $61, $1C, $E4
     db $01, $FF, $00
     db $00
 
@@ -1796,59 +1941,51 @@ SimMaximumHealthValues:
     db 17, 17, 17, 17, 17, 17, 17
 
 TEXT_Cursor:
-    db $3E, $00
-TEXT_LeftArrow:
-    db $3D, $00
-TEXT_RightArrow:
-    db $3C, $00
+    db ">", $00
 TEXT_ResumeGame:
-    db "Resume game", $00
-TEXT_RestoreHealth:
-    db "Restore health", $00
+    db "* Resume game", $00
+TEXT_AdjustHealth:
+    db "+ Adjust HP, * to max", $00
 TEXT_CountdownRunning:
-    db "Countdown is RUNNING", $00
+    db "* Countdown is RUNNING", $00
 TEXT_CountdownPaused:
-    db "Countdown is PAUSED", $00
+    db "* Countdown is PAUSED", $00
 TEXT_MemoryViewerOff:
-    db "Memory viewer is OFF", $00
+    db "* Memory viewer is OFF", $00
 TEXT_MemoryViewerOn:
-    db "Memory viewer is ON", $00
+    db "* Memory viewer is ON", $00
 TEXT_OnRoomLoad:
-    db "On room load...", $00
-TEXT_AutoRecoveryOff:
-    db "- Auto-recovery OFF", $00
-TEXT_AutoRecoveryOn:
-    db "- Auto-recovery ON", $00
+    db "On room load#.", $00
 TEXT_AutoSwordUpgradeOff:
-    db "- Sword upgrade OFF", $00
+    db "* Sword upgrade OFF", $00
 TEXT_AutoSwordUpgradeOn:
-    db "- Sword upgrade ON", $00
+    db "* Sword upgrade ON", $00
 TEXT_AutoSimDifficultyOff:
-    db "- PRO difficulty", $00
+    db "* PRO difficulty", $00
 TEXT_AutoSimDifficultyOn:
-    db "- SIM difficulty", $00
+    db "* SIM difficulty", $00
 TEXT_LoadSelectedRoom:
-    db "Load selected room", $00
+    db "* Load selected room", $00
 TEXT_EraseAll:
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16, $0D
-    db $0B, $16
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18, $0D
+    db $0B, $18
     db $00
 
 ; Pointer table for magic descriptions.
@@ -1860,15 +1997,94 @@ MagicDescriptions:
     dw TEXT_MagicLight
 
 TEXT_MagicNone:
-    db "No magic", $00
+    db "+ No magic", $00
 TEXT_MagicFire:
-    db "Magical Fire", $00
+    db "+ Magical Fire", $00
 TEXT_MagicStardust:
-    db "Magical Stardust", $00
+    db "+ Magical Stardust", $00
 TEXT_MagicAura:
-    db "Magical Aura", $00
+    db "+ Magical Aura", $00
 TEXT_MagicLight:
-    db "Magical Light", $00
+    db "+ Magical Light", $00
+
+; Pointer table for auto-set-health descriptions.
+AutoSetHealthDescriptions:
+    dw TEXT_AutoSetHealth00
+    dw TEXT_AutoSetHealth01
+    dw TEXT_AutoSetHealth02
+    dw TEXT_AutoSetHealth03
+    dw TEXT_AutoSetHealth04
+    dw TEXT_AutoSetHealth05
+    dw TEXT_AutoSetHealth06
+    dw TEXT_AutoSetHealth07
+    dw TEXT_AutoSetHealth08
+    dw TEXT_AutoSetHealth09
+    dw TEXT_AutoSetHealth10
+    dw TEXT_AutoSetHealth11
+    dw TEXT_AutoSetHealth12
+    dw TEXT_AutoSetHealth13
+    dw TEXT_AutoSetHealth14
+    dw TEXT_AutoSetHealth15
+    dw TEXT_AutoSetHealth16
+    dw TEXT_AutoSetHealth17
+    dw TEXT_AutoSetHealth18
+    dw TEXT_AutoSetHealth19
+    dw TEXT_AutoSetHealth20
+    dw TEXT_AutoSetHealth21
+    dw TEXT_AutoSetHealth22
+    dw TEXT_AutoSetHealth23
+    dw TEXT_AutoSetHealth24
+
+TEXT_AutoSetHealth00:
+    db "+ Don't change health", $00
+TEXT_AutoSetHealth01:
+    db "+ Set health to 01", $00
+TEXT_AutoSetHealth02:
+    db "+ Set health to 02", $00
+TEXT_AutoSetHealth03:
+    db "+ Set health to 03", $00
+TEXT_AutoSetHealth04:
+    db "+ Set health to 04", $00
+TEXT_AutoSetHealth05:
+    db "+ Set health to 05", $00
+TEXT_AutoSetHealth06:
+    db "+ Set health to 06", $00
+TEXT_AutoSetHealth07:
+    db "+ Set health to 07", $00
+TEXT_AutoSetHealth08:
+    db "+ Set health to 08", $00
+TEXT_AutoSetHealth09:
+    db "+ Set health to 09", $00
+TEXT_AutoSetHealth10:
+    db "+ Set health to 10", $00
+TEXT_AutoSetHealth11:
+    db "+ Set health to 11", $00
+TEXT_AutoSetHealth12:
+    db "+ Set health to 12", $00
+TEXT_AutoSetHealth13:
+    db "+ Set health to 13", $00
+TEXT_AutoSetHealth14:
+    db "+ Set health to 14", $00
+TEXT_AutoSetHealth15:
+    db "+ Set health to 15", $00
+TEXT_AutoSetHealth16:
+    db "+ Set health to 16", $00
+TEXT_AutoSetHealth17:
+    db "+ Set health to 17", $00
+TEXT_AutoSetHealth18:
+    db "+ Set health to 18", $00
+TEXT_AutoSetHealth19:
+    db "+ Set health to 19", $00
+TEXT_AutoSetHealth20:
+    db "+ Set health to 20", $00
+TEXT_AutoSetHealth21:
+    db "+ Set health to 21", $00
+TEXT_AutoSetHealth22:
+    db "+ Set health to 22", $00
+TEXT_AutoSetHealth23:
+    db "+ Set health to 23", $00
+TEXT_AutoSetHealth24:
+    db "+ Set health to MAX", $00
 
 ; Pointer table for on-exit descriptions.
 OnExitDescriptions:
@@ -1877,11 +2093,11 @@ OnExitDescriptions:
     dw TEXT_OnExitRandom
 
 TEXT_OnExitRepeat:
-    db "On exit, REPEAT", $00
+    db "+ On exit, REPEAT", $00
 TEXT_OnExitAdvance:
-    db "On exit, ADVANCE", $00
+    db "+ On exit, ADVANCE", $00
 TEXT_OnExitRandom:
-    db "On exit, RANDOM", $00
+    db "+ On exit, RANDOM", $00
 
 ; Pointer table for room descriptions.
 RoomDescriptions:
@@ -1900,337 +2116,337 @@ RoomDescriptions:
     dw TEXT_702, TEXT_703, TEXT_704, TEXT_705, TEXT_706, TEXT_707, TEXT_708
 
 TEXT_101:
-    db "101", $0D
-    db "Forest", $0D
-    db "Centaur Knight"
+    db "  101", $0D
+    db "+ Forest", $0D
+    db "  Centaur Knight"
     db $00
 
 TEXT_101_CHECKPOINT:
-    db "101 checkpoint", $0D
-    db "Forest", $0D
-    db "Centaur Knight"
+    db "  101 checkpoint", $0D
+    db "+ Forest", $0D
+    db "  Centaur Knight"
     db $00
 
 TEXT_101_AT_BOSS:
-    db "101 at boss", $0D
-    db "Forest", $0D
-    db "Centaur Knight"
+    db "  101 at boss", $0D
+    db "+ Forest", $0D
+    db "  Centaur Knight"
     db $00
 
 TEXT_102:
-    db "102", $0D
-    db "Caves I", $0D
-    db "Skeltous"
+    db "  102", $0D
+    db "+ Caves I", $0D
+    db "  Skeltous"
     db $00
 
 TEXT_103:
-    db "103", $0D
-    db "Caves II", $0D
-    db "Endless climb"
+    db "  103", $0D
+    db "+ Caves II", $0D
+    db "  Endless climb"
     db $00
 
 TEXT_104:
-    db "104", $0D
-    db "Caves III", $0D
-    db "Minotaurus"
+    db "  104", $0D
+    db "+ Caves III", $0D
+    db "  Minotaurus"
     db $00
 
 TEXT_201:
-    db "201", $0D
-    db "Swamp", $0D
-    db "Manticore"
+    db "  201", $0D
+    db "+ Swamp", $0D
+    db "  Manticore"
     db $00
 
 TEXT_201_CHECKPOINT:
-    db "201 checkpoint", $0D
-    db "Swamp", $0D
-    db "Manticore"
+    db "  201 checkpoint", $0D
+    db "+ Swamp", $0D
+    db "  Manticore"
     db $00
 
 TEXT_201_AT_BOSS:
-    db "201 at boss", $0D
-    db "Swamp", $0D
-    db "Manticore"
+    db "  201 at boss", $0D
+    db "+ Swamp", $0D
+    db "  Manticore"
     db $00
 
 TEXT_202:
-    db "202", $0D
-    db "Castle I", $0D
-    db "Front gate"
+    db "  202", $0D
+    db "+ Castle I", $0D
+    db "  Front gate"
     db $00
 
 TEXT_203:
-    db "203", $0D
-    db "Castle II", $0D
-    db "First elevator"
+    db "  203", $0D
+    db "+ Castle II", $0D
+    db "  First elevator"
     db $00
 
 TEXT_204:
-    db "204", $0D
-    db "Castle III", $0D
-    db "Glowing cellar"
+    db "  204", $0D
+    db "+ Castle III", $0D
+    db "  Glowing cellar"
     db $00
 
 TEXT_205:
-    db "205", $0D
-    db "Castle IV", $0D
-    db "Second elevator"
+    db "  205", $0D
+    db "+ Castle IV", $0D
+    db "  Second elevator"
     db $00
 
 TEXT_206:
-    db "206", $0D
-    db "Castle V", $0D
-    db "Atop the wall"
+    db "  206", $0D
+    db "+ Castle V", $0D
+    db "  Atop the wall"
     db $00
 
 TEXT_207:
-    db "207", $0D
-    db "Castle VI", $0D
-    db "Yoku blocks"
+    db "  207", $0D
+    db "+ Castle VI", $0D
+    db "  Yoku blocks"
     db $00
 
 TEXT_208:
-    db "208", $0D
-    db "Castle VII", $0D
-    db "Zeppelin Wolf"
+    db "  208", $0D
+    db "+ Castle VII", $0D
+    db "  Zeppelin Wolf"
     db $00
 
 TEXT_301:
-    db "301", $0D
-    db "Desert I", $0D
-    db "Shifting sands"
+    db "  301", $0D
+    db "+ Desert I", $0D
+    db "  Shifting sands"
     db $00
 
 TEXT_302:
-    db "302", $0D
-    db "Desert II", $0D
-    db "Dagoba"
+    db "  302", $0D
+    db "+ Desert II", $0D
+    db "  Dagoba"
     db $00
 
 TEXT_302_AT_BOSS:
-    db "302 at boss", $0D
-    db "Desert II", $0D
-    db "Dagoba"
+    db "  302 at boss", $0D
+    db "+ Desert II", $0D
+    db "  Dagoba"
     db $00
 
 TEXT_303:
-    db "303", $0D
-    db "Pyramid I", $0D
-    db "Mummy crypt"
+    db "  303", $0D
+    db "+ Pyramid I", $0D
+    db "  Mummy crypt"
     db $00
 
 TEXT_304:
-    db "304", $0D
-    db "Pyramid II", $0D
-    db "Anubis statues"
+    db "  304", $0D
+    db "+ Pyramid II", $0D
+    db "  Anubis statues"
     db $00
 
 TEXT_305:
-    db "305", $0D
-    db "Pyramid III", $0D
-    db "Elevator race"
+    db "  305", $0D
+    db "+ Pyramid III", $0D
+    db "  Elevator race"
     db $00
 
 TEXT_306:
-    db "306", $0D
-    db "Pyramid IV", $0D
-    db "Pharao"
+    db "  306", $0D
+    db "+ Pyramid IV", $0D
+    db "  Pharaoh"
     db $00
 
 TEXT_401:
-    db "401", $0D
-    db "Mountains I", $0D
-    db "Auto-scroller"
+    db "  401", $0D
+    db "+ Mountains I", $0D
+    db "  Auto-scroller"
     db $00
 
 TEXT_401_CHECKPOINT:
-    db "401 checkpoint", $0D
-    db "Mountains I", $0D
-    db "Auto-scroller"
+    db "  401 checkpoint", $0D
+    db "+ Mountains I", $0D
+    db "  Auto-scroller"
     db $00
 
 TEXT_402:
-    db "402", $0D
-    db "Mountains II", $0D
-    db "Waterfall"
+    db "  402", $0D
+    db "+ Mountains II", $0D
+    db "  Waterfall"
     db $00
 
 TEXT_403:
-    db "403", $0D
-    db "Mountains III", $0D
-    db "Serpent"
+    db "  403", $0D
+    db "+ Mountains III", $0D
+    db "  Serpent"
     db $00
 
 TEXT_404:
-    db "404", $0D
-    db "Volcano I", $0D
-    db "Hall of giants"
+    db "  404", $0D
+    db "+ Volcano I", $0D
+    db "  Hall of giants"
     db $00
 
 TEXT_405:
-    db "405", $0D
-    db "Volcano II", $0D
-    db "Magma chamber"
+    db "  405", $0D
+    db "+ Volcano II", $0D
+    db "  Magma chamber"
     db $00
 
 TEXT_406:
-    db "406", $0D
-    db "Volcano III", $0D
-    db "Samurai archers"
+    db "  406", $0D
+    db "+ Volcano III", $0D
+    db "  Samurai archers"
     db $00
 
 TEXT_407:
-    db "407", $0D
-    db "Volcano IV", $0D
-    db "Fire Wheel"
+    db "  407", $0D
+    db "+ Volcano IV", $0D
+    db "  Fire Wheel"
     db $00
 
 TEXT_501:
-    db "501", $0D
-    db "Jungle I", $0D
-    db "Overgrown ruins"
+    db "  501", $0D
+    db "+ Jungle I", $0D
+    db "  Overgrown ruins"
     db $00
 
 TEXT_502:
-    db "502", $0D
-    db "Jungle II", $0D
-    db "Falling snakes"
+    db "  502", $0D
+    db "+ Jungle II", $0D
+    db "  Falling snakes"
     db $00
 
 TEXT_503:
-    db "503", $0D
-    db "Jungle III", $0D
-    db "Rafflasher"
+    db "  503", $0D
+    db "+ Jungle III", $0D
+    db "  Rafflasher"
     db $00
 
 TEXT_504:
-    db "504", $0D
-    db "Temple I", $0D
-    db "Stone elevator"
+    db "  504", $0D
+    db "+ Temple I", $0D
+    db "  Stone elevator"
     db $00
 
 TEXT_505:
-    db "505", $0D
-    db "Temple II", $0D
-    db "Choose a path"
+    db "  505", $0D
+    db "+ Temple II", $0D
+    db "  Choose a path"
     db $00
 
 TEXT_506:
-    db "506", $0D
-    db "Temple III", $0D
-    db "Left path"
+    db "  506", $0D
+    db "+ Temple III", $0D
+    db "  Left path"
     db $00
 
 TEXT_507:
-    db "507", $0D
-    db "Temple IV", $0D
-    db "Right path"
+    db "  507", $0D
+    db "+ Temple IV", $0D
+    db "  Right path"
     db $00
 
 TEXT_508:
-    db "508", $0D
-    db "Temple V", $0D
-    db "Kalia"
+    db "  508", $0D
+    db "+ Temple V", $0D
+    db "  Kalia"
     db $00
 
 TEXT_601:
-    db "601", $0D
-    db "Arctic I", $0D
-    db "Snowfield"
+    db "  601", $0D
+    db "+ Arctic I", $0D
+    db "  Snowfield"
     db $00
 
 TEXT_602:
-    db "602", $0D
-    db "Arctic II", $0D
-    db "Ice-cube rafts"
+    db "  602", $0D
+    db "+ Arctic II", $0D
+    db "  Ice-cube rafts"
     db $00
 
 TEXT_603:
-    db "603", $0D
-    db "Arctic III", $0D
-    db "Ride the sled"
+    db "  603", $0D
+    db "+ Arctic III", $0D
+    db "  Ride the sled"
     db $00
 
 TEXT_603_CHECKPOINT:
-    db "603 checkpoint", $0D
-    db "Arctic III", $0D
-    db "Ride the sled"
+    db "  603 checkpoint", $0D
+    db "+ Arctic III", $0D
+    db "  Ride the sled"
     db $00
 
 TEXT_604:
-    db "604", $0D
-    db "Arctic IV", $0D
-    db "Merman Fly"
+    db "  604", $0D
+    db "+ Arctic IV", $0D
+    db "  Merman Fly"
     db $00
 
 TEXT_605:
-    db "605", $0D
-    db "Great Tree I", $0D
-    db "Tree entrance"
+    db "  605", $0D
+    db "+ Great Tree I", $0D
+    db "  Tree entrance"
     db $00
 
 TEXT_606:
-    db "606", $0D
-    db "Great Tree II", $0D
-    db "Lower trunk"
+    db "  606", $0D
+    db "+ Great Tree II", $0D
+    db "  Lower trunk"
     db $00
 
 TEXT_607:
-    db "607", $0D
-    db "Great Tree III", $0D
-    db "Upper trunk"
+    db "  607", $0D
+    db "+ Great Tree III", $0D
+    db "  Upper trunk"
     db $00
 
 TEXT_608:
-    db "608", $0D
-    db "Great Tree IV", $0D
-    db "Arctic Wyvern"
+    db "  608", $0D
+    db "+ Great Tree IV", $0D
+    db "  Arctic Wyvern"
     db $00
 
 TEXT_702:
-    db "702", $0D
-    db "Death Heim", $0D
-    db "Minotaurus"
+    db "  702", $0D
+    db "+ Death Heim", $0D
+    db "  Minotaurus"
     db $00
 
 TEXT_703:
-    db "703", $0D
-    db "Death Heim", $0D
-    db "Zeppelin Wolf"
+    db "  703", $0D
+    db "+ Death Heim", $0D
+    db "  Zeppelin Wolf"
     db $00
 
 TEXT_704:
-    db "704", $0D
-    db "Death Heim", $0D
-    db "Pharao"
+    db "  704", $0D
+    db "+ Death Heim", $0D
+    db "  Pharaoh"
     db $00
 
 TEXT_705:
-    db "705", $0D
-    db "Death Heim", $0D
-    db "Fire Wheel"
+    db "  705", $0D
+    db "+ Death Heim", $0D
+    db "  Fire Wheel"
     db $00
 
 TEXT_706:
-    db "706", $0D
-    db "Death Heim", $0D
-    db "Kalia"
+    db "  706", $0D
+    db "+ Death Heim", $0D
+    db "  Kalia"
     db $00
 
 TEXT_707:
-    db "707", $0D
-    db "Death Heim", $0D
-    db "Arctic Wyvern"
+    db "  707", $0D
+    db "+ Death Heim", $0D
+    db "  Arctic Wyvern"
     db $00
 
 TEXT_708:
-    db "708", $0D
-    db "Death Heim", $0D
-    db "Tanzra"
+    db "  708", $0D
+    db "+ Death Heim", $0D
+    db "  Tanzra"
     db $00
 
 Credits:
-    db "ActRaiser Practice ROM v0.5", $0D
+    db "ActRaiser Practice ROM v0.6", $0D
     db "Osteoclave", $0D
-    db "2020-12-19"
+    db "2021-03-15"
     db $00

@@ -34,6 +34,8 @@ incsrc registers.asm
 !changeMap       = $1A
 !currentHealth   = $1D
 !maximumHealth   = $1E
+!playerX         = $80
+!playerY         = $82
 !frameCounter    = $88
 !scheduledHDMA   = $92
 !vramWriteSource = $D0
@@ -51,9 +53,10 @@ incsrc registers.asm
 !tilemapBG3      = $7FB000
 
 ; Vanilla labels
-PrintText  = $02BF60
-UpdateHUD  = $02C206
-MagicIcons = $06A400
+ShortRandom = $0084C0
+PrintText   = $02BF60
+UpdateHUD   = $02C206
+MagicIcons  = $06A400
 
 ; New variables
 ; In vanilla, 7E024C-0281 contains the "offering" inventories for each town.
@@ -63,19 +66,40 @@ MagicIcons = $06A400
 !heldButton     = $024E
 !heldCounter    = $0250
 !memoryViewerOn = $0252
-!magicIcon      = $0254
-!currentRoom    = $0256
-!selectedRoom   = $0258
+; Cached values for the memory viewer
+!cacheXH = $0254
+!cacheXL = $0255
+!cacheYH = $0256
+!cacheYL = $0257
+!cacheR  = $0258
+!cacheFH = $0259
+!cacheIH = $025A
+!cacheIL = $025B
+; Joypad input bits, sorted for the input viewer
+!inputUDLR = $025C
+!inputEL   = $025E
+!inputTR   = $0260
+!inputBYAX = $0262
+; More new variables
+!magicIcon    = $0264
+!onExitAction = $0266
+!currentRoom  = $0268
+!selectedRoom = $026A
 ; "On room load" actions
-!autoHeal  = $025A
-!autoSword = $025B
-!autoEasy  = $025C
+!autoHeal  = $026C
+!autoSword = $026D
+!autoEasy  = $026E
 
 ; New constants
 ; Number of items in the various selectable menus.
-!MENU_LENGTH  = 9
-!MAGIC_LENGTH = 5
-!ROOMS_LENGTH = 55
+!MENU_LENGTH    = 10
+!MAGIC_LENGTH   = 5
+!ON_EXIT_LENGTH = 3
+!ROOMS_LENGTH   = 55
+; Number of eligible destinations when the on-exit action is "RANDOM".
+; This is less than the total number of rooms because we don't want
+; checkpoints or at-boss spawn points to be eligible destinations.
+!DESTINATIONS_LENGTH = 48
 ; Repeat delay and repeat rate for held buttons.
 !REPEAT_DELAY = 15
 !REPEAT_RATE  = 6
@@ -104,7 +128,7 @@ NewTitleScreenText:
     db    "> PRACTICE", $0D
     db    $0D
     db    $0D
-    db    "  v0.2, 2020-10-16", $0D
+    db    "  v0.3, 2020-10-23", $0D
     db    "     by Osteoclave"
     db    $00
 
@@ -182,8 +206,14 @@ org   $008098
 jsl   UpdateMemoryViewer
 org   $0080D3
 jsl   UpdateMemoryViewer
+; This JSL is executed during room transitions (both fade-out and fade-in).
+; BG3 gets cleared during room transitions, and "UpdateMemoryViewer" only
+; draws the values that have changed (intentional time-saving behaviour).
+; So calling "UpdateMemoryViewer" here could result in a partially-drawn
+; memory viewer when the new room loads.
+; To avoid that, we use "ForceUpdateMemoryViewer" instead.
 org   $008304
-jsl   UpdateMemoryViewer
+jsl   ForceUpdateMemoryViewer
 
 ; When updating the BG3 tilemap in VRAM, include the memory viewer.
 org   $02AF13
@@ -216,7 +246,8 @@ stz   $00FC
 org   $008066
 jsl   NewPauseHandler
 
-; Perform the "on room load" actions when loading a new room.
+; Perform the "on room load" actions when loading a room. These actions
+; happen on all room loads: manual loading, exiting a room, death, etc.
 org   $00826C
 jsl   OnRoomLoad
 
@@ -231,73 +262,132 @@ nop
 nop
 lda   !currentMap+1
 
-; Upon leaving a room, warp back to the room you just left.
+; On room exit, load the next room according to the current on-exit action.
+; 102
 org   $00B030
-lda   #$0102
+jsl   LoadNextRoom
+rts
+; 103
 org   $00B03B
-lda   #$0103
+jsl   LoadNextRoom
+rts
+; 202
 org   $00B92B
-lda   #$0202
+jsl   LoadNextRoom
+rts
+; 203
 org   $00B939
-lda   #$0203
+jsl   LoadNextRoom
+rts
+; 204
 org   $00B947
-lda   #$0204
+jsl   LoadNextRoom
+rts
+; 205
 org   $00B955
-lda   #$0205
+jsl   LoadNextRoom
+rts
+; 206
 org   $00B963
-lda   #$0206
+jsl   LoadNextRoom
+rts
+; 207
 org   $00B971
-lda   #$0207
+jsl   LoadNextRoom
+rts
+; 301
 org   $00C15E
-lda   #$0301
+jsl   LoadNextRoom
+rts
+; 303
 org   $00C16C
-lda   #$0303
+jsl   LoadNextRoom
+rts
+; 304
 org   $00C186
-lda   #$0304
+jsl   LoadNextRoom
+rts
+; 305
 org   $00C19C
-lda   #$0305
+jsl   LoadNextRoom
+rts
+; 401
 org   $00CDEB
-lda   #$0401
+jsl   LoadNextRoom
+rts
+; 402
 org   $00CDF9
-lda   #$0402
+jsl   LoadNextRoom
+rts
+; 404
 org   $00CE0F
-lda   #$0404
+jsl   LoadNextRoom
+rts
+; 405
 org   $00CE1D
-lda   #$0405
+jsl   LoadNextRoom
+rts
+; 406
 org   $00CE33
-lda   #$0406
+jsl   LoadNextRoom
+rts
+; 501
 org   $00E6C6
-lda   #$0501
+jsl   LoadNextRoom
+rts
+; 502
 org   $00E6D4
-lda   #$0502
+jsl   LoadNextRoom
+rts
+; 504
 org   $00E6EA
-lda   #$0504
+jsl   LoadNextRoom
+rts
+; 505 = The room-with-two-exits in the Marahna temple (a special case)
 org   $00E6F8
-ldy   #$0505
-org   $00E702
-nop
+lda   !playerX
+cmp   #$0180
+bcc   +
+cmp   #$02E0
+bcs   +
+rts
++
+jsl   LoadNextRoom
+rts
+; 506 and 507
 org   $00E71C
-lda   !currentMap
-xba
+jsl   LoadNextRoom
+rts
+; 601
 org   $00E766
-lda   #$0601
+jsl   LoadNextRoom
+rts
+; 602
 org   $00E774
-lda   #$0602
+jsl   LoadNextRoom
+rts
+; 603
 org   $00E78A
-lda   #$0603
+jsl   LoadNextRoom
+rts
+; 605
 org   $00E7A0
-lda   #$0605
+jsl   LoadNextRoom
+rts
+; 606
 org   $00E7AB
-lda   #$0606
+jsl   LoadNextRoom
+rts
+; 607
 org   $00E7B6
-lda   #$0607
+jsl   LoadNextRoom
+rts
 
-; Upon completing an Act, don't increment the "Acts completed" counter and
-; don't advance to the next Act. Just reload the current map.
+; Upon completing an Act, don't increment the "Acts completed" counter. Load
+; the next room according to the current on-exit action.
 org   $008788
-lda   !currentMap
-xba
-jmp   $8796
+jsl   LoadNextRoom
+bra   $0A
 
 ; When completing an Act on normal difficulty, don't do the score count-up.
 org   $00A205
@@ -310,11 +400,11 @@ nop
 nop
 
 ; Upon defeating a boss in the boss rush, don't increment the "bosses
-; defeated in the boss rush" counter. Just reload the current map.
+; defeated in the boss rush" counter. Load the next room according to the
+; current on-exit action.
 org   $00FEEC
-lda   !currentMap
-xba
-bra   $07
+jsl   LoadNextRoom
+bra   $08
 org   $00FF00
 bra   $05
 
@@ -356,6 +446,23 @@ db    $08
 org   $028E0A
 db    $08
 
+; The random-number generation function lives in bank 00 and ends with a
+; short return (RTS). We want to generate random numbers from outside that
+; bank, so let's create a helper function in bank 00 that ends with a long
+; return (RTL).
+org   $00FF60
+LongRandom:
+    jsr   ShortRandom
+    rtl
+
+; Use the modified font.
+; - Erased the leftover Japanese characters from tiles 0x80-FF
+; - 0x80-8F: Copied the 0-9/A-F characters to simplify the memory viewer
+; - 0x90-B3: New graphics tiles for the input viewer
+org    $17ECFB
+incbin actraiser_font_modified_compressed.bin
+warnpc $17F7A2
+
 
 
 ; Updated map metadata: each map now loads all of its required assets.
@@ -376,6 +483,62 @@ UpdateMemoryViewer:
 
 
 
+ForceUpdateMemoryViewer:
+    php
+    rep   #$20
+    lda   !memoryViewerOn
+    beq   +
+    jsr   InvalidateCache
+    jsr   DrawMemoryViewer
+    +
+    plp
+    rtl
+
+
+
+InvalidateCache:
+    php
+    sep   #$20
+    pha
+    ; Player's X coordinate, high byte
+    lda   !playerX+1
+    eor   #$FF
+    sta   !cacheXH
+    ; Player's X coordinate, low byte
+    lda   !playerX
+    eor   #$FF
+    sta   !cacheXL
+    ; Player's Y coordinate, high byte
+    lda   !playerY+1
+    eor   #$FF
+    sta   !cacheYH
+    ; Player's Y coordinate, low byte
+    lda   !playerY
+    eor   #$FF
+    sta   !cacheYL
+    ; RNG state
+    lda   !rng
+    eor   #$FF
+    sta   !cacheR
+    ; Frame counter, high byte
+    lda   !frameCounter+1
+    eor   #$FF
+    sta   !cacheFH
+    ; Frame counter, low byte = Not cached (changes every frame)
+    ; Joypad input, high byte
+    lda   !JOY1H
+    eor   #$FF
+    sta   !cacheIH
+    ; Joypad input, low byte
+    lda   !JOY1L
+    eor   #$FF
+    sta   !cacheIL
+    pla
+    plp
+    rts
+
+
+
 DrawMemoryViewer:
     php
     rep   #$20
@@ -392,32 +555,111 @@ DrawMemoryViewer:
     lda   #$2446
     sta   !tilemapBG3+(26<<6)+(25<<1)
     +
-    ; Clear the high byte of the accumulator (DrawByte subtly requires this)
-    and   #$00FF
     sep   #$20
-    ldy   $8A
-    ; Player's X coordinate
+    ; Player's X coordinate, high byte
     ldx.w #3<<1
-    lda   $0003,y
+    lda   !playerX+1
+    cmp   !cacheXH
+    beq   +
+    sta   !cacheXH
     jsr   DrawByte
-    lda   $0002,y
+    +
+    ; Player's X coordinate, low byte
+    ldx.w #5<<1
+    lda   !playerX
+    cmp   !cacheXL
+    beq   +
+    sta   !cacheXL
     jsr   DrawByte
-    ; Player's Y coordinate
+    +
+    ; Player's Y coordinate, high byte
     ldx.w #10<<1
-    lda   $0005,y
+    lda   !playerY+1
+    cmp   !cacheYH
+    beq   +
+    sta   !cacheYH
     jsr   DrawByte
-    lda   $0004,y
+    +
+    ; Player's Y coordinate, low byte
+    ldx.w #12<<1
+    lda   !playerY
+    cmp   !cacheYL
+    beq   +
+    sta   !cacheYL
     jsr   DrawByte
+    +
     ; RNG state
     ldx.w #22<<1
     lda   !rng
+    cmp   !cacheR
+    beq   +
+    sta   !cacheR
     jsr   DrawByte
-    ; Frame counter
+    +
+    ; Frame counter, high byte
     ldx.w #27<<1
     lda   !frameCounter+1
+    cmp   !cacheFH
+    beq   +
+    sta   !cacheFH
     jsr   DrawByte
+    +
+    ; Frame counter, low byte
+    ; This is not cached because it's expected to change every frame
+    ldx.w #29<<1
     lda   !frameCounter
     jsr   DrawByte
+    ; Has the joypad input changed?
+    lda   !JOY1H
+    cmp   !cacheIH
+    bne   .InputChanged
+    lda   !JOY1L
+    cmp   !cacheIL
+    beq   .InputUnchanged
+.InputChanged:
+    stz   !inputBYAX
+    stz   !inputEL
+    stz   !inputTR
+    ; Joypad input, high byte
+    lda   !JOY1H
+    sta   !cacheIH
+    and   #$0F
+    sta   !inputUDLR
+    lda   !JOY1H
+    asl
+    rol   !inputBYAX
+    asl
+    rol   !inputBYAX
+    asl
+    rol   !inputEL
+    asl
+    rol   !inputTR
+    ; Joypad input, low byte
+    lda   !JOY1L
+    sta   !cacheIL
+    asl
+    rol   !inputBYAX
+    asl
+    rol   !inputBYAX
+    asl
+    rol   !inputEL
+    asl
+    rol   !inputTR
+    ; Draw the input display
+    rep   #$20
+    lda   !inputUDLR
+    ora   #$2890
+    sta   !tilemapBG3+(26<<6)+(15<<1)
+    lda   !inputEL
+    ora   #$28B0
+    sta   !tilemapBG3+(26<<6)+(16<<1)
+    lda   !inputTR
+    ora   #$68B0
+    sta   !tilemapBG3+(26<<6)+(17<<1)
+    lda   !inputBYAX
+    ora   #$28A0
+    sta   !tilemapBG3+(26<<6)+(18<<1)
+.InputUnchanged:
     rep   #$20
     pla
     plp
@@ -426,27 +668,23 @@ DrawMemoryViewer:
 
 
 DrawByte:
-    phy
     ; First digit
     pha
     lsr
     lsr
     lsr
     lsr
-    tay
-    lda   $8228,y
+    ora   #$80
     sta   !tilemapBG3+(26<<6),x
     inx
     inx
     pla
     ; Second digit
     and   #$0F
-    tay
-    lda   $8228,y
+    ora   #$80
     sta   !tilemapBG3+(26<<6),x
     inx
     inx
-    ply
     rts
 
 
@@ -466,6 +704,10 @@ EraseMemoryViewer:
     sta   !tilemapBG3+(26<<6)+(11<<1)
     sta   !tilemapBG3+(26<<6)+(12<<1)
     sta   !tilemapBG3+(26<<6)+(13<<1)
+    sta   !tilemapBG3+(26<<6)+(15<<1)
+    sta   !tilemapBG3+(26<<6)+(16<<1)
+    sta   !tilemapBG3+(26<<6)+(17<<1)
+    sta   !tilemapBG3+(26<<6)+(18<<1)
     sta   !tilemapBG3+(26<<6)+(20<<1)
     sta   !tilemapBG3+(26<<6)+(22<<1)
     sta   !tilemapBG3+(26<<6)+(23<<1)
@@ -644,6 +886,7 @@ PracticeMenu:
 ..TurnOn:
     lda   #$0001
     sta   !memoryViewerOn
+    jsr   InvalidateCache
     jsr   DrawMemoryViewer
     bra   ..Toggled
 ..TurnOff:
@@ -735,7 +978,7 @@ PracticeMenu:
 
 .ToggleAutoEasy:
     cmp.w #6
-    bne   .RoomSelector
+    bne   .OnExitSelector
     lda   #!JOYPAD_B
     jsr   CheckButton
     bcc   ..NoPress
@@ -754,8 +997,41 @@ PracticeMenu:
 ..NoPress:
     jmp   .NextFrame
 
-.RoomSelector:
+.OnExitSelector:
     cmp.w #7
+    bne   .RoomSelector
+
+    ; On-exit selector behaviour: Left button
+    lda   #!JOYPAD_LEFT
+    jsr   CheckButton
+    bcc   ++
+    lda   !onExitAction
+    dec
+    bpl   +
+    lda.w #!ON_EXIT_LENGTH-1
+    +
+    sta   !onExitAction
+    jmp   .RedrawMenu
+    ++
+
+    ; On-exit selector behaviour: Right button
+    lda   #!JOYPAD_RIGHT
+    jsr   CheckButton
+    bcc   ++
+    lda   !onExitAction
+    inc
+    cmp.w #!ON_EXIT_LENGTH
+    bcc   +
+    lda.w #0
+    +
+    sta   !onExitAction
+    jmp   .RedrawMenu
+    ++
+
+    jmp   .NextFrame
+
+.RoomSelector:
+    cmp.w #8
     bne   .LoadSelectedRoom
 
     ; Room selector behaviour: Left button
@@ -788,7 +1064,7 @@ PracticeMenu:
     bra   .NextFrame
 
 .LoadSelectedRoom:
-    cmp.w #8
+    cmp.w #9
     bne   .NextFrame
     lda   #!JOYPAD_B
     bit   !JOY1L
@@ -972,25 +1248,41 @@ DrawMenu:
     lda   #$0E07
     jsl   PrintText
 
+    ; On-exit selector
+    lda   !onExitAction
+    asl
+    tax
+    lda   OnExitDescriptions,x
+    tay
+    lda   #$1009
+    jsl   PrintText
+    ; Arrows
+    ldy.w #TEXT_LeftArrow
+    lda   #$1007
+    jsl   PrintText
+    ldy.w #TEXT_RightArrow
+    lda   #$101A
+    jsl   PrintText
+
     ; Room selector
     lda   !selectedRoom
     asl
     tax
     lda   RoomDescriptions,x
     tay
-    lda   #$1009
+    lda   #$1209
     jsl   PrintText
     ; Arrows
     ldy.w #TEXT_LeftArrow
-    lda   #$1107
+    lda   #$1307
     jsl   PrintText
     ldy.w #TEXT_RightArrow
-    lda   #$111A
+    lda   #$131A
     jsl   PrintText
 
     ; Load selected room
     ldy.w #TEXT_LoadSelectedRoom
-    lda   #$1407
+    lda   #$1607
     jsl   PrintText
 
     ; Cursor
@@ -1033,12 +1325,17 @@ DrawMenu:
     +
     cmp.w #7
     bne   +
-    lda   #$1105
+    lda   #$1005
     bra   .CursorPositioned
     +
     cmp.w #8
     bne   +
-    lda   #$1405
+    lda   #$1305
+    bra   .CursorPositioned
+    +
+    cmp.w #9
+    bne   +
+    lda   #$1605
 .CursorPositioned:
     jsl   PrintText
     +
@@ -1165,15 +1462,131 @@ OnRoomLoad:
 
 
 
+LoadNextRoom:
+    lda   !changeMap
+    and   #$00FF
+    beq   +
+    ; If we're already in a room transition, we don't need to do anything.
+    rtl
+    +
+    lda   !onExitAction
+.Repeat:
+    ; If the on-exit action is "REPEAT", repeat the current room.
+    cmp.w #0
+    bne   .Advance
+    lda   !currentMap
+    xba
+    sta   !changeMap
+    rtl
+.Advance:
+    ; If the on-exit action is "ADVANCE", advance to the next room.
+    cmp.w #1
+    bne   .Random
+    phx
+    lda   !currentRoom
+    ; Handle the room-with-two-exits in the Marahna temple
+    cmp.w #35
+    bne   ..Normal
+    lda   !playerX
+    cmp   #$0180
+    bcs   +
+    ; Advancing through the left door
+    lda.w #36
+    bra   ..RoomFound
+    +
+    cmp   #$02E0
+    bcc   +
+    ; Advancing through the right door
+    lda.w #37
+    bra   ..RoomFound
+    +
+    ; Should-never-happen fallback: reload the room-with-two-exits
+    lda.w #35
+    bra   ..RoomFound
+..Normal:
+    asl
+    tax
+    lda   NextRooms,x
+..RoomFound:
+    sta   !currentRoom
+    asl
+    tax
+    lda   MapNumbers,x
+    sta   !changeMap
+    plx
+    rtl
+.Random:
+    ; If the on-exit action is "RANDOM", go to a randomly-selected room.
+    cmp.w #2
+    bne   .Done
+    ; Convert the current room-index to an index in the destinations list
+    lda   !currentRoom
+    phx
+    ldx   #$0000
+    -
+    cmp   DestinationRooms+2,x
+    bcc   +
+    inx
+    inx
+    bra   -
+    +
+    txa
+    lsr
+    pha
+    ; Generate a random byte
+    jsl   LongRandom
+    and   #$00FF
+    ; Add the previously-converted index
+    clc
+    adc   $01,s
+    ; Divide this sum by DESTINATIONS_LENGTH and get the remainder
+    sta   !WRDIVL
+    pla
+    sep   #$20
+    lda.b #!DESTINATIONS_LENGTH
+    sta   !WRDIVB
+    ; Wait for the division to complete
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    ; Get the remainder
+    rep   #$20
+    lda   !RDMPYL
+    asl
+    tax
+    lda   DestinationRooms,x
+    ; Room found
+    sta   !currentRoom
+    asl
+    tax
+    lda   MapNumbers,x
+    sta   !changeMap
+    plx
+.Done:
+    rtl
+
+
+
 WaitForVBlank:
     php
-    sep   #$20
+    rep   #$20
     pha
+    lda   !memoryViewerOn
+    beq   +
+    jsr   DrawMemoryViewer
+    +
+    sep   #$20
     lda   !RDNMI
     -
     lda   !RDNMI
     bpl   -
     lda   !RDNMI
+    rep   #$20
     pla
     plp
     rts
@@ -1193,7 +1606,7 @@ WaitForKeyup:
 WindowData:
     db $27, $FF, $00
     db $40, $24, $DC
-    db $49, $24, $DC
+    db $59, $24, $DC
     db $01, $FF, $00
     db $00
 
@@ -1213,6 +1626,43 @@ MapNumbers:
     dw $0605, $0606, $0607, $0608
     dw $0702, $0703, $0704, $0705, $0706, $0707, $0708
 
+; "Next room" values for each room-index.
+; There's a "next room" value in this table for the room-with-two-exits in
+; the Marahna temple, but it's just a placeholder. See "LoadNextRoom" for
+; how that case is handled.
+NextRooms:
+    dw 3, 3, 3
+    dw 4, 5, 6
+    dw 9, 9, 9
+    dw 10, 11, 12, 13, 14, 15, 16
+    dw 17, 19, 19
+    dw 20, 21, 22, 23
+    dw 25, 25, 26, 27
+    dw 28, 29, 30, 31
+    dw 32, 33, 34
+    dw 35, 36, 38, 38, 39
+    dw 40, 41, 43, 43, 44
+    dw 45, 46, 47, 48
+    dw 49, 50, 51, 52, 53, 54, 0
+
+; Eligible destination room-indexes when the on-exit action is "RANDOM".
+; The terminating "$FFFF" simplifies some search code in "LoadNextRoom".
+DestinationRooms:
+    dw 0
+    dw 3, 4, 5
+    dw 6
+    dw 9, 10, 11, 12, 13, 14, 15
+    dw 16, 17
+    dw 19, 20, 21, 22
+    dw 23, 25, 26
+    dw 27, 28, 29, 30
+    dw 31, 32, 33
+    dw 34, 35, 36, 37, 38
+    dw 39, 40, 41, 43
+    dw 44, 45, 46, 47
+    dw 48, 49, 50, 51, 52, 53, 54
+    dw $FFFF
+
 TEXT_Cursor:
     db $3E, $00
 TEXT_LeftArrow:
@@ -1227,9 +1677,25 @@ TEXT_MemoryViewerOff:
     db "Memory viewer is OFF", $00
 TEXT_MemoryViewerOn:
     db "Memory viewer is ON", $00
+TEXT_OnRoomLoad:
+    db "On room load...", $00
+TEXT_AutoHealOff:
+    db "- Auto-recovery OFF", $00
+TEXT_AutoHealOn:
+    db "- Auto-recovery ON", $00
+TEXT_AutoSwordOff:
+    db "- Sword upgrade OFF", $00
+TEXT_AutoSwordOn:
+    db "- Sword upgrade ON", $00
+TEXT_AutoEasyOff:
+    db "- PRO difficulty", $00
+TEXT_AutoEasyOn:
+    db "- NORMAL difficulty", $00
 TEXT_LoadSelectedRoom:
     db "Load selected room", $00
 TEXT_EraseAll:
+    db $0B, $16, $0D
+    db $0B, $16, $0D
     db $0B, $16, $0D
     db $0B, $16, $0D
     db $0B, $16, $0D
@@ -1267,20 +1733,18 @@ TEXT_MagicAura:
 TEXT_MagicLight:
     db "Magical Light", $00
 
-TEXT_OnRoomLoad:
-    db "On room load...", $00
-TEXT_AutoHealOff:
-    db "- Auto-recovery OFF", $00
-TEXT_AutoHealOn:
-    db "- Auto-recovery ON", $00
-TEXT_AutoSwordOff:
-    db "- Sword upgrade OFF", $00
-TEXT_AutoSwordOn:
-    db "- Sword upgrade ON", $00
-TEXT_AutoEasyOff:
-    db "- PRO difficulty", $00
-TEXT_AutoEasyOn:
-    db "- NORMAL difficulty", $00
+; Pointer table for on-exit descriptions.
+OnExitDescriptions:
+    dw TEXT_OnExitRepeat
+    dw TEXT_OnExitAdvance
+    dw TEXT_OnExitRandom
+
+TEXT_OnExitRepeat:
+    db "On exit, REPEAT", $00
+TEXT_OnExitAdvance:
+    db "On exit, ADVANCE", $00
+TEXT_OnExitRandom:
+    db "On exit, RANDOM", $00
 
 ; Pointer table for room descriptions.
 RoomDescriptions:
@@ -1629,7 +2093,7 @@ TEXT_708:
     db $00
 
 Credits:
-    db "ActRaiser Practice ROM v0.2", $0D
+    db "ActRaiser Practice ROM v0.3", $0D
     db "Osteoclave", $0D
-    db "2020-10-16"
+    db "2020-10-23"
     db $00

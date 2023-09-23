@@ -6,7 +6,7 @@
 asar 1.81
 math pri on
 math round off
-check title "ACTRAISER-USA        "
+check title "ACTRAISER            "
 
 arch 65816
 lorom
@@ -40,58 +40,58 @@ incsrc registers.asm
 !vramWriteDest   = $D3
 !vramWriteSize   = $D5
 !swordUpgrade    = $E4
-!discardInput    = $F4
-!ignoreInput     = $F6
-!equippedMagic   = $02AC
-!rng             = $02D1
-!deathFlag       = $032C
-!respawnX        = $032E
-!respawnY        = $0330
-!pauseStatus     = $0332
-!difficulty      = $0349
+!discardInput    = $F7
+!ignoreInput     = $F9
+!equippedMagic   = $02AB
+!rng             = $02D0
+!deathFlag       = $031A
+!respawnX        = $031C
+!respawnY        = $031E
+!pauseStatus     = $0320
+!difficulty      = $0337
 !tilemapBG3      = $7FB000
 
 ; Vanilla labels
-ShortRandom   = $0084C0
-CountdownTick = $02BC82
-PrintText     = $02BF60
-UpdateHUD     = $02C206
+ShortRandom   = $0084BA
+CountdownTick = $048C7D
+PrintText     = $048F56
+UpdateHUD     = $04914B
 MagicIcons    = $06A400
 
 ; New variables
-; In vanilla, 7E024C-0281 contains the "offering" inventories for each town.
+; In vanilla, 7E024B-0280 contains the "offering" inventories for each town.
 ; The practice ROM never enters town-building mode, so we can repurpose this
 ; memory safely.
-!menuCursor     = $024C
-!heldButton     = $024E
-!heldCounter    = $0250
-!countdownOff   = $0252
-!memoryViewerOn = $0253
+!menuCursor     = $024B
+!heldButton     = $024D
+!heldCounter    = $024F
+!countdownOff   = $0251
+!memoryViewerOn = $0252
 ; Cached values for the memory viewer
-!cacheXH = $0254
-!cacheXL = $0255
-!cacheYH = $0256
-!cacheYL = $0257
-!cacheR  = $0258
-!cacheFH = $0259
-!cacheIH = $025A
-!cacheIL = $025B
+!cacheXH = $0253
+!cacheXL = $0254
+!cacheYH = $0255
+!cacheYL = $0256
+!cacheR  = $0257
+!cacheFH = $0258
+!cacheIH = $0259
+!cacheIL = $025A
 ; Joypad input bits, sorted for the input viewer
-!inputUDLR = $025C
-!inputEL   = $025E
-!inputTR   = $0260
-!inputBYAX = $0262
+!inputUDLR = $025B
+!inputEL   = $025D
+!inputTR   = $025F
+!inputBYAX = $0261
 ; More new variables
-!magicIcon    = $0264
-!onExitAction = $0266
-!currentRoom  = $0268
-!selectedRoom = $026A
-!spcLock      = $026C
+!magicIcon    = $0263
+!onExitAction = $0265
+!currentRoom  = $0267
+!selectedRoom = $0269
+!spcLock      = $026B
 ; "On room load" actions
-!autoSetHealth     = $026D
-!autoSwordUpgrade  = $026E
-!autoSimDifficulty = $026F
-!endOfActRefill    = $0270
+!autoSetHealth     = $026C
+!autoSwordUpgrade  = $026D
+!autoSimDifficulty = $026E
+!endOfActRefill    = $026F
 
 ; New constants
 ; Number of items in the various selectable menus.
@@ -111,23 +111,23 @@ MagicIcons    = $06A400
 
 
 ; Windowing registers: Don't invert the windows.
-org   $02C6CB
+org   $04972B
 lda   #$22
 ; Windowing registers: Disable window 1 on BG3.
-org   $02C6D0
+org   $049730
 stz   !W34SEL
 ; Windowing registers: Set window 1's range to zero.
-org   $02C6D6
+org   $049736
 lda   #$FF
-org   $02C6DB
+org   $04973B
 lda   #$00
 
 ; Look for map metadata at 0xF8000 instead of 0x28000.
-org   $02BE28
+org   $048E1E
 lda   #$1F
 
 ; Insert new text for the title screen.
-org   $02A9A7
+org   $02A71D
 NewTitleScreenText:
     db    "^ PRACTICE", $0D
     db    $0D
@@ -137,22 +137,22 @@ NewTitleScreenText:
 
 ; Force the title screen menu to only have one option. (This normally
 ; happens when there's no save data, and only "START" is displayed.)
-org   $02A70D
+org   $02A483
 nop
 nop
 
 ; Print the new text instead of "START" for that one menu option.
-org   $02A711
+org   $02A487
 lda   #$110B
 ldy.w #NewTitleScreenText
 
-; Always enter Professional Mode from the title screen menu.
+; Always enter Special Mode from the title screen menu.
 org   $008040
 nop
 nop
 
 ; Update the HUD to use the modified font's tiles.
-org   $028E7E
+org   $028D27
 ; First row
 dw    $0015, $0016, $0017, $0018, $0019, $001A   ; "[ACT]"
 dw    $0C5B, $005D, $0030, $0030, $0000          ; Heart icon and lives remaining
@@ -168,36 +168,36 @@ dw    $0000, $0000, $0000                        ; Spacer
 dw    $005C, $005C, $005C, $005C, $005C, $005C   ; MP scrolls
 dw    $005C, $005C, $005C, $005C, $0000
 ; Third row ("ENEMY", only visible during boss fights)
-org   $00A4D3
+org   $00A492
 lda   #$240F
 ; Health meters (player and enemy)
-org   $02C38F
+org   $0492CA
 lda   #$1B
-org   $02C3A5
+org   $0492E0
 lda   #$1C
-org   $02C3B3
+org   $0492EE
 lda   #$1D
-org   $02C3C4
+org   $0492FF
 lda   #$1E
-org   $02C3D3
+org   $04930E
 lda   #$1F
 ; MP scrolls
-org   $02C2E2
+org   $04921D
 lda   #$205C
 
 ; Always show 99 lives remaining at the top of the screen.
-org   $02C28E
+org   $0491CE
 lda   #$39
-org   $02C29E
+org   $0491D9
 lda   #$39
 
 ; Upon death, don't restore health: "OnRoomLoad" takes care of that now.
-org   $0082AB
+org   $0082A5
 nop
 nop
 
 ; Upon death, don't reduce the number of lives remaining.
-org   $0082B0
+org   $0082AA
 nop
 nop
 nop
@@ -209,47 +209,47 @@ org   $0080DB
 jsl   NewCountdownTick
 
 ; If you have no magic equipped, display the empty-box icon.
-org   $02BCDB
+org   $048CD6
 lda   #$0005
 
 ; Allow magic to be used at will: no MP required, no MP cost.
-org   $009E03
+org   $009E11
 bra   $03
-org   $009E0A
+org   $009E18
 nop
 nop
 
 ; Always show ten MP scrolls at the top of the screen.
-org   $02C2DC
+org   $049217
 nop
 nop
 
 ; Prevent the Magical Stardust spell from doing double damage.
 ; During object creation, if:
-; - The game is in Professional Mode
+; - The game is in Special Mode
 ; - Certain flags on the new object are clear
 ; - The new object's attack power is equal to one
 ; Then the new object's attack power is increased to two.
-; The other spells are not affected by this boost: Magical Fire and Magical
-; Aura both have one of the relevant flags set, and Magical Light's attack
-; power is already 2, so it's not eligible.
+; The other spells are not affected by this boost: Magical Fire has one of
+; the relevant flags set, Magical Aura's attack power is 2 (not eligible),
+; Magical Light's attack power is 5 (also not eligible).
 ; Anyway. Let's add some code to keep the attack power of meteors at one.
-org   $009F7B
+org   $009F89
 lda   #$FFA0
 org   $00FFA0
 lda   #$0001
 sta   $002A,x
-lda   #$A0E8
+lda   #$A0F6
 sta   $0012,x
-jmp   $A0E8
+jmp   $A0F6
 
-; Merge the 02/BB4C and 02/BC27 functions.
-; "JSL $02BB4C" is always followed by "JSL $02BC27", and 02/BB4C is located
-; immediately before 02/BC27 in the ROM. If we replace the RTL at the end of
-; 02/BB4C with a NOP, we can execute both functions with just "JSL $02BB4C".
-; "JSL $02BC27" can then be replaced with a JSL to new code.
+; Merge the 04/8B47 and 04/8C22 functions.
+; "JSL $048B47" is always followed by "JSL $048C22", and 04/8B47 is located
+; immediately before 04/8C22 in the ROM. If we replace the RTL at the end of
+; 04/8B47 with a NOP, we can execute both functions with just "JSL $048B47".
+; "JSL $048C22" can then be replaced with a JSL to new code.
 ; (Specifically, new code to update the memory viewer.)
-org   $02BC26
+org   $048C21
 nop
 org   $008098
 jsl   UpdateMemoryViewer
@@ -261,18 +261,18 @@ jsl   UpdateMemoryViewer
 ; So calling "UpdateMemoryViewer" here could result in a partially-drawn
 ; memory viewer when the new room loads.
 ; To avoid that, we use "ForceUpdateMemoryViewer" instead.
-org   $008304
+org   $0082FE
 jsl   ForceUpdateMemoryViewer
 
 ; When updating the BG3 tilemap in VRAM, include the memory viewer.
-org   $02AF13
+org   $02AC39
 jmp   $FF80
 org   $02FF80
-; The accumulator is 8-bit and holds the value of $F1 here.
+; The accumulator is 8-bit and holds the value of $F4 here.
 beq   +
-; If $F1 is nonzero, we're copying the full BG3 tilemap to VRAM. This will
+; If $F4 is nonzero, we're copying the full BG3 tilemap to VRAM. This will
 ; copy the memory viewer as well, so we don't need to do anything.
-jmp   $AF16
+jmp   $AC3C
 +
 lda   !memoryViewerOn
 beq   +
@@ -288,8 +288,8 @@ sta   !MDMAEN
 rts
 
 ; Skip the "descending ball of light brings statue to life" animation.
-org   $02AB0D
-stz   $00FC
+org   $02A853
+stz   $00FF
 
 ; Replace the existing Start-button pause handler.
 org   $008066
@@ -297,16 +297,16 @@ jsl   NewPauseHandler
 
 ; Perform the "on room load" actions when loading a room. These actions
 ; happen on all room loads: manual loading, exiting a room, death, etc.
-org   $00826C
+org   $008266
 jsl   OnRoomLoad
 
 ; Always use the respawn coordinates if they're set, not just after a death.
-org   $009380
+org   $0093A8
 nop
 nop
 
 ; In the event of player death, respawn on the same map.
-org   $02BD61
+org   $048D5C
 nop
 nop
 lda   !currentMap+1
@@ -319,94 +319,103 @@ lda   !currentMap+1
 ; cause any problems, but when the SPC700 is in the middle of some other
 ; communication, an unexpected command can throw things off and cause the
 ; game to freeze.
-org   $00A3FE
+org   $00A3BD
 jsl   AcquireSpcLock
-org   $00A410
+org   $00A3CF
 jsl   ReleaseSpcLock
+
+; Use tile 0x21 instead of 0x3E for exclamation points in pop-up messages.
+; e.g. "CLEAR!", "TIME UP!", "PAUSE!"
+org   $00A89D
+db    $21
+org   $00A8AC
+db    $21
+org   $00A8B3
+db    $21
 
 ; On room exit, load the next room according to the current on-exit action.
 ; 102
-org   $00B030
+org   $00B0C4
 jsl   LoadNextRoom
 rts
 ; 103
-org   $00B03B
+org   $00B0CF
 jsl   LoadNextRoom
 rts
 ; 202
-org   $00B92B
+org   $00B9BF
 jsl   LoadNextRoom
 rts
 ; 203
-org   $00B939
+org   $00B9CD
 jsl   LoadNextRoom
 rts
 ; 204
-org   $00B947
+org   $00B9DB
 jsl   LoadNextRoom
 rts
 ; 205
-org   $00B955
+org   $00B9E9
 jsl   LoadNextRoom
 rts
 ; 206
-org   $00B963
+org   $00B9F7
 jsl   LoadNextRoom
 rts
 ; 207
-org   $00B971
+org   $00BA05
 jsl   LoadNextRoom
 rts
 ; 301
-org   $00C15E
+org   $00C1F5
 jsl   LoadNextRoom
 rts
 ; 303
-org   $00C16C
+org   $00C203
 jsl   LoadNextRoom
 rts
 ; 304
-org   $00C186
+org   $00C21D
 jsl   LoadNextRoom
 rts
 ; 305
-org   $00C19C
+org   $00C233
 jsl   LoadNextRoom
 rts
 ; 401
-org   $00CDEB
+org   $00CE70
 jsl   LoadNextRoom
 rts
 ; 402
-org   $00CDF9
+org   $00CE7E
 jsl   LoadNextRoom
 rts
 ; 404
-org   $00CE0F
+org   $00CE94
 jsl   LoadNextRoom
 rts
 ; 405
-org   $00CE1D
+org   $00CEA2
 jsl   LoadNextRoom
 rts
 ; 406
-org   $00CE33
+org   $00CEB8
 jsl   LoadNextRoom
 rts
 ; 501
-org   $00E6C6
+org   $00E745
 jsl   LoadNextRoom
 rts
 ; 502
-org   $00E6D4
+org   $00E753
 jsl   LoadNextRoom
 rts
 ; 504
-org   $00E6EA
+org   $00E769
 jsl   LoadNextRoom
 rts
 ; 505 = The room-with-two-exits in the Marahna temple (a special case)
-org   $00E6F8
+org   $00E777
 lda   !playerX
 cmp   #$0180
 bcc   +
@@ -417,95 +426,95 @@ rts
 jsl   LoadNextRoom
 rts
 ; 506 and 507
-org   $00E71C
+org   $00E79B
 jsl   LoadNextRoom
 rts
 ; 601
-org   $00E766
+org   $00E7E5
 jsl   LoadNextRoom
 rts
 ; 602
-org   $00E774
+org   $00E7F3
 jsl   LoadNextRoom
 rts
 ; 603
-org   $00E78A
+org   $00E809
 jsl   LoadNextRoom
 rts
 ; 605
-org   $00E7A0
+org   $00E81F
 jsl   LoadNextRoom
 rts
 ; 606
-org   $00E7AB
+org   $00E82A
 jsl   LoadNextRoom
 rts
 ; 607
-org   $00E7B6
+org   $00E835
 jsl   LoadNextRoom
 rts
 
 ; Upon completing an Act, don't increment the "Acts completed" counter. Load
 ; the next room according to the current on-exit action.
-org   $008788
+org   $008777
 jsl   LoadNextRoom
 bra   $0A
 
 ; When completing an Act on Sim difficulty, don't do the score count-up.
-org   $00A205
+org   $00A213
 nop
 nop
 
 ; When completing an Act on Sim difficulty, don't return to sim mode.
-org   $00A2CF
+org   $00A2C5
 nop
 nop
 
 ; Upon defeating a boss in the boss rush, don't increment the "bosses
 ; defeated in the boss rush" counter. Load the next room according to the
 ; current on-exit action.
-org   $00FEEC
+org   $00FF69
 jsl   LoadNextRoom
 bra   $08
-org   $00FF00
+org   $00FF7D
 bra   $05
 
 ; Prevent animated tiles from glitching.
-org   $0289E2
+org   $02888B
 db    $08
-org   $028A6E
+org   $028917
 db    $02
-org   $028AA6
+org   $02894F
 db    $02
-org   $028B32
+org   $0289DB
 db    $08
-org   $028B6A
+org   $028A13
 db    $04
-org   $028B86
+org   $028A2F
 db    $04
-org   $028BA2
+org   $028A4B
 db    $04
-org   $028C2E
+org   $028AD7
 db    $08
-org   $028C4A
+org   $028AF3
 db    $08
-org   $028C9E
+org   $028B47
 db    $08
-org   $028CBA
+org   $028B63
 db    $08
-org   $028CF2
+org   $028B9B
 db    $04
-org   $028D0E
+org   $028BB7
 db    $04
-org   $028D2A
+org   $028BD3
 db    $04
-org   $028D9A
+org   $028C43
 db    $08
-org   $028DB6
+org   $028C5F
 db    $08
-org   $028DEE
+org   $028C97
 db    $08
-org   $028E0A
+org   $028CB3
 db    $08
 
 ; The random-number generation function lives in bank 00 and ends with a
@@ -518,15 +527,15 @@ LongRandom:
     rtl
 
 ; Use the modified font.
-org    $17ECFB
+org    $14F2A6
 incbin actraiser_font_modified_compressed.bin
-warnpc $17F7A2
+warnpc $14FE2B
 
 
 
 ; Updated map metadata: each map now loads all of its required assets.
 org    $1F8000
-incsrc map_metadata_usa.asm
+incsrc map_metadata_japan.asm
 
 
 
@@ -1615,7 +1624,7 @@ OnRoomLoad:
     bne   +
     lda   #$09C0
     sta   !respawnX
-    lda   #$0170
+    lda   #$0190
     sta   !respawnY
     bra   .SpawnDone
     +

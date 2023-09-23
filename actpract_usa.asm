@@ -67,30 +67,31 @@ MagicIcons    = $06A400
 !heldButton     = $024E
 !heldCounter    = $0250
 !countdownOff   = $0252
-!memoryViewerOn = $0254
+!memoryViewerOn = $0253
 ; Cached values for the memory viewer
-!cacheXH = $0256
-!cacheXL = $0257
-!cacheYH = $0258
-!cacheYL = $0259
-!cacheR  = $025A
-!cacheFH = $025B
-!cacheIH = $025C
-!cacheIL = $025D
+!cacheXH = $0254
+!cacheXL = $0255
+!cacheYH = $0256
+!cacheYL = $0257
+!cacheR  = $0258
+!cacheFH = $0259
+!cacheIH = $025A
+!cacheIL = $025B
 ; Joypad input bits, sorted for the input viewer
-!inputUDLR = $025E
-!inputEL   = $0260
-!inputTR   = $0262
-!inputBYAX = $0264
+!inputUDLR = $025C
+!inputEL   = $025E
+!inputTR   = $0260
+!inputBYAX = $0262
 ; More new variables
-!magicIcon    = $0266
-!onExitAction = $0268
-!currentRoom  = $026A
-!selectedRoom = $026C
+!magicIcon    = $0264
+!onExitAction = $0266
+!currentRoom  = $0268
+!selectedRoom = $026A
 ; "On room load" actions
-!autoHeal  = $026E
-!autoSword = $026F
-!autoEasy  = $0270
+!autoRecovery      = $026C
+!autoSwordUpgrade  = $026D
+!autoSimDifficulty = $026E
+!endOfActRefill    = $026F
 
 ; New constants
 ; Number of items in the various selectable menus.
@@ -130,7 +131,7 @@ NewTitleScreenText:
     db    "> PRACTICE", $0D
     db    $0D
     db    $0D
-    db    "  v0.4, 2020-10-26", $0D
+    db    "  v0.5, 2020-12-19", $0D
     db    "     by Osteoclave"
     db    $00
 
@@ -233,7 +234,7 @@ beq   +
 ; copy the memory viewer as well, so we don't need to do anything.
 jmp   $AF16
 +
-ldx   !memoryViewerOn
+lda   !memoryViewerOn
 beq   +
 ldx   #$5B41
 stx   !VMADDL
@@ -397,12 +398,12 @@ org   $008788
 jsl   LoadNextRoom
 bra   $0A
 
-; When completing an Act on normal difficulty, don't do the score count-up.
+; When completing an Act on Sim difficulty, don't do the score count-up.
 org   $00A205
 nop
 nop
 
-; When completing an Act on normal difficulty, don't return to sim mode.
+; When completing an Act on Sim difficulty, don't return to sim mode.
 org   $00A2CF
 nop
 nop
@@ -479,48 +480,38 @@ incsrc map_metadata_usa.asm
 
 
 
+; The following three functions are called as part of the game loop, so we
+; want them to be as lean as possible to minimize added lag.
+; All of them expect the accumulator to be 8-bit when they are called.
 NewCountdownTick:
-    php
-    rep   #$20
     lda   !countdownOff
     bne   +
-    sep   #$20
-    jsl   CountdownTick
+    jml   CountdownTick
     +
-    plp
     rtl
 
 
 
 UpdateMemoryViewer:
-    php
-    rep   #$20
     lda   !memoryViewerOn
     beq   +
     jsr   DrawMemoryViewer
     +
-    plp
     rtl
 
 
 
 ForceUpdateMemoryViewer:
-    php
-    rep   #$20
     lda   !memoryViewerOn
     beq   +
     jsr   InvalidateCache
     jsr   DrawMemoryViewer
     +
-    plp
     rtl
 
 
 
 InvalidateCache:
-    php
-    sep   #$20
-    pha
     ; Player's X coordinate, high byte
     lda   !playerX+1
     eor   #$FF
@@ -554,8 +545,6 @@ InvalidateCache:
     lda   !JOY1L
     eor   #$FF
     sta   !cacheIL
-    pla
-    plp
     rts
 
 
@@ -711,9 +700,6 @@ DrawByte:
 
 
 EraseMemoryViewer:
-    php
-    sep   #$20
-    pha
     lda   #$00
     sta   !tilemapBG3+(26<<6)+(1<<1)
     sta   !tilemapBG3+(26<<6)+(3<<1)
@@ -737,8 +723,6 @@ EraseMemoryViewer:
     sta   !tilemapBG3+(26<<6)+(28<<1)
     sta   !tilemapBG3+(26<<6)+(29<<1)
     sta   !tilemapBG3+(26<<6)+(30<<1)
-    pla
-    plp
     rts
 
 
@@ -902,15 +886,17 @@ PracticeMenu:
     lda   #!JOYPAD_B
     jsr   CheckButton
     bcc   ..NoPress
+    sep   #$20
     lda   !countdownOff
     bne   ..Resume
 ..Pause:
-    lda   #$0001
+    lda   #$01
     sta   !countdownOff
     bra   ..Toggled
 ..Resume:
     stz   !countdownOff
 ..Toggled:
+    rep   #$20
     jmp   .RedrawMenu
 ..NoPress:
     jmp   .NextFrame
@@ -921,10 +907,11 @@ PracticeMenu:
     lda   #!JOYPAD_B
     jsr   CheckButton
     bcc   ..NoPress
+    sep   #$20
     lda   !memoryViewerOn
     bne   ..TurnOff
 ..TurnOn:
-    lda   #$0001
+    lda   #$01
     sta   !memoryViewerOn
     jsr   InvalidateCache
     jsr   DrawMemoryViewer
@@ -933,13 +920,14 @@ PracticeMenu:
     stz   !memoryViewerOn
     jsr   EraseMemoryViewer
 ..Toggled:
+    rep   #$20
     jmp   .RedrawMenu
 ..NoPress:
     jmp   .NextFrame
 
 .MagicSelector:
     cmp.w #4
-    bne   .ToggleAutoHeal
+    bne   .ToggleAutoRecovery
 
     ; Magic selector behaviour: Left button
     lda   #!JOYPAD_LEFT
@@ -974,63 +962,63 @@ PracticeMenu:
 
     jmp   .NextFrame
 
-.ToggleAutoHeal:
+.ToggleAutoRecovery:
     cmp.w #5
-    bne   .ToggleAutoSword
+    bne   .ToggleAutoSwordUpgrade
     lda   #!JOYPAD_B
     jsr   CheckButton
     bcc   ..NoPress
     sep   #$20
-    lda   !autoHeal
+    lda   !autoRecovery
     bne   ..TurnOff
 ..TurnOn:
     lda   #$01
-    sta   !autoHeal
+    sta   !autoRecovery
     bra   ..Toggled
 ..TurnOff:
-    stz   !autoHeal
+    stz   !autoRecovery
 ..Toggled:
     rep   #$20
     jmp   .RedrawMenu
 ..NoPress:
     jmp   .NextFrame
 
-.ToggleAutoSword:
+.ToggleAutoSwordUpgrade:
     cmp.w #6
-    bne   .ToggleAutoEasy
+    bne   .ToggleAutoSimDifficulty
     lda   #!JOYPAD_B
     jsr   CheckButton
     bcc   ..NoPress
     sep   #$20
-    lda   !autoSword
+    lda   !autoSwordUpgrade
     bne   ..TurnOff
 ..TurnOn:
     lda   #$01
-    sta   !autoSword
+    sta   !autoSwordUpgrade
     bra   ..Toggled
 ..TurnOff:
-    stz   !autoSword
+    stz   !autoSwordUpgrade
 ..Toggled:
     rep   #$20
     jmp   .RedrawMenu
 ..NoPress:
     jmp   .NextFrame
 
-.ToggleAutoEasy:
+.ToggleAutoSimDifficulty:
     cmp.w #7
     bne   .OnExitSelector
     lda   #!JOYPAD_B
     jsr   CheckButton
     bcc   ..NoPress
     sep   #$20
-    lda   !autoEasy
+    lda   !autoSimDifficulty
     bne   ..TurnOff
 ..TurnOn:
     lda   #$01
-    sta   !autoEasy
+    sta   !autoSimDifficulty
     bra   ..Toggled
 ..TurnOff:
-    stz   !autoEasy
+    stz   !autoSimDifficulty
 ..Toggled:
     rep   #$20
     jmp   .RedrawMenu
@@ -1230,6 +1218,7 @@ DrawMenu:
     ; Toggle countdown
     ldy.w #TEXT_CountdownRunning
     lda   !countdownOff
+    and   #$00FF
     beq   +
     ldy.w #TEXT_CountdownPaused
     +
@@ -1239,6 +1228,7 @@ DrawMenu:
     ; Toggle memory viewer
     ldy.w #TEXT_MemoryViewerOff
     lda   !memoryViewerOn
+    and   #$00FF
     beq   +
     ldy.w #TEXT_MemoryViewerOn
     +
@@ -1268,31 +1258,31 @@ DrawMenu:
     jsl   PrintText
 
     ; On room load: Auto-recovery
-    ldy.w #TEXT_AutoHealOff
-    lda   !autoHeal
+    ldy.w #TEXT_AutoRecoveryOff
+    lda   !autoRecovery
     and   #$00FF
     beq   +
-    ldy.w #TEXT_AutoHealOn
+    ldy.w #TEXT_AutoRecoveryOn
     +
     lda   #$0D07
     jsl   PrintText
 
     ; On room load: Sword upgrade
-    ldy.w #TEXT_AutoSwordOff
-    lda   !autoSword
+    ldy.w #TEXT_AutoSwordUpgradeOff
+    lda   !autoSwordUpgrade
     and   #$00FF
     beq   +
-    ldy.w #TEXT_AutoSwordOn
+    ldy.w #TEXT_AutoSwordUpgradeOn
     +
     lda   #$0E07
     jsl   PrintText
 
-    ; On room load: Difficulty
-    ldy.w #TEXT_AutoEasyOff
-    lda   !autoEasy
+    ; On room load: Sim difficulty
+    ldy.w #TEXT_AutoSimDifficultyOff
+    lda   !autoSimDifficulty
     and   #$00FF
     beq   +
-    ldy.w #TEXT_AutoEasyOn
+    ldy.w #TEXT_AutoSimDifficultyOn
     +
     lda   #$0F07
     jsl   PrintText
@@ -1415,24 +1405,51 @@ EraseMenu:
 
 
 OnRoomLoad:
-    ; Auto-recovery
-    lda   !autoHeal
-    beq   +
-    lda   !maximumHealth
-    sta   !currentHealth
-    +
     ; Sword upgrade
     stz   !swordUpgrade
-    lda   !autoSword
+    lda   !autoSwordUpgrade
     beq   +
     lda   #$FF
     sta   !swordUpgrade
     +
-    ; Difficulty
+    ; Sim difficulty
+    lda   #$01
+    sta   !difficulty
+    lda   !autoSimDifficulty
+    beq   +
     stz   !difficulty
-    lda   !autoEasy
-    bne   +
-    inc   !difficulty
+    +
+    ; Sim max health
+    lda.b #24
+    sta   !maximumHealth
+    lda   !autoSimDifficulty
+    beq   +
+    ldx   !currentRoom
+    lda   SimMaximumHealthValues,x
+    sta   !maximumHealth
+    +
+    ; Make sure current health doesn't exceed maximum health
+    lda   !maximumHealth
+    cmp   !currentHealth
+    bcs   +
+    sta   !currentHealth
+    +
+    ; If the end-of-Act-refill flag is set, restore all health
+    lda   !endOfActRefill
+    beq   +
+    stz   !endOfActRefill
+    bra   .RestoreAllHealth
+    +
+    ; If your current health is zero (from loading a new room partway
+    ; through the process of dying), restore all health
+    lda   !currentHealth
+    beq   .RestoreAllHealth
+    ; Auto-recovery
+    lda   !autoRecovery
+    beq   +
+.RestoreAllHealth:
+    lda   !maximumHealth
+    sta   !currentHealth
     +
     ; Customized spawn points
     rep   #$20
@@ -1457,9 +1474,9 @@ OnRoomLoad:
     ; 101 at boss
     cmp.w #2
     bne   +
-    lda   #$0E50
+    lda   #$0DF0
     sta   !respawnX
-    lda   #$02D0
+    lda   #$0240
     sta   !respawnY
     bra   .SpawnDone
     +
@@ -1523,6 +1540,40 @@ LoadNextRoom:
     ; If we're already in a room transition, we don't need to do anything.
     rtl
     +
+    ; If we're on Sim difficulty and just cleared an end-of-Act map, set the
+    ; end-of-Act-refill flag to guarantee full health when the next map
+    ; loads. (This ensures full health even if maximum health changes.)
+    phx
+    lda   !autoSimDifficulty
+    and   #$00FF
+    beq   .EndOfActLoopEnd
+    ; Don't set the end-of-Act-refill flag if the on-exit action is
+    ; "REPEAT". This prevents your health from being automatically and
+    ; unavoidably restored to full when fighting Tanzra repeatedly.
+    ; For all of the other bosses, you already have full health (from the
+    ; post-boss refill), and "REPEAT" guarantees that your maximum health
+    ; won't change, so the end-of-Act-refill is redundant and skippable.
+    lda   !onExitAction
+    beq   .EndOfActLoopEnd
+    ldx   #$0000
+.EndOfActLoopStart:
+    lda   EndOfActMapNumbers,x
+    cmp   #$FFFF
+    beq   .EndOfActLoopEnd
+    xba
+    cmp   !currentMap
+    bne   +
+    sep   #$20
+    lda   #$01
+    sta   !endOfActRefill
+    rep   #$20
+    bra   .EndOfActLoopEnd
+    +
+    inx
+    inx
+    bra   .EndOfActLoopStart
+.EndOfActLoopEnd:
+    plx
     lda   !onExitAction
 .Repeat:
     ; If the on-exit action is "REPEAT", repeat the current room.
@@ -1630,11 +1681,11 @@ WaitForVBlank:
     php
     rep   #$20
     pha
+    sep   #$20
     lda   !memoryViewerOn
     beq   +
     jsr   DrawMemoryViewer
     +
-    sep   #$20
     lda   !RDNMI
     -
     lda   !RDNMI
@@ -1680,6 +1731,17 @@ MapNumbers:
     dw $0605, $0606, $0607, $0608
     dw $0702, $0703, $0704, $0705, $0706, $0707, $0708
 
+; End-of-Act map-numbers.
+; The terminating "$FFFF" simplifies some search code in "LoadNextRoom".
+EndOfActMapNumbers:
+    dw $0101, $0104
+    dw $0201, $0208
+    dw $0302, $0306
+    dw $0403, $0407
+    dw $0503, $0508
+    dw $0604, $0608
+    dw $0708, $FFFF
+
 ; "Next room" values for each room-index.
 ; There's a "next room" value in this table for the room-with-two-exits in
 ; the Marahna temple, but it's just a placeholder. See "LoadNextRoom" for
@@ -1717,6 +1779,22 @@ DestinationRooms:
     dw 48, 49, 50, 51, 52, 53, 54
     dw $FFFF
 
+; Maximum health values for each room-index, from sYn's 39-cycle Any% route.
+SimMaximumHealthValues:
+    db 8, 8, 8
+    db 9, 9, 9
+    db 9, 9, 9
+    db 10, 10, 10, 10, 10, 10, 10
+    db 11, 11, 11
+    db 12, 12, 12, 12
+    db 13, 13, 13, 13
+    db 14, 14, 14, 14
+    db 15, 15, 15
+    db 17, 17, 17, 17, 17
+    db 17, 17, 17, 17, 17
+    db 17, 17, 17, 17
+    db 17, 17, 17, 17, 17, 17, 17
+
 TEXT_Cursor:
     db $3E, $00
 TEXT_LeftArrow:
@@ -1737,18 +1815,18 @@ TEXT_MemoryViewerOn:
     db "Memory viewer is ON", $00
 TEXT_OnRoomLoad:
     db "On room load...", $00
-TEXT_AutoHealOff:
+TEXT_AutoRecoveryOff:
     db "- Auto-recovery OFF", $00
-TEXT_AutoHealOn:
+TEXT_AutoRecoveryOn:
     db "- Auto-recovery ON", $00
-TEXT_AutoSwordOff:
+TEXT_AutoSwordUpgradeOff:
     db "- Sword upgrade OFF", $00
-TEXT_AutoSwordOn:
+TEXT_AutoSwordUpgradeOn:
     db "- Sword upgrade ON", $00
-TEXT_AutoEasyOff:
+TEXT_AutoSimDifficultyOff:
     db "- PRO difficulty", $00
-TEXT_AutoEasyOn:
-    db "- NORMAL difficulty", $00
+TEXT_AutoSimDifficultyOn:
+    db "- SIM difficulty", $00
 TEXT_LoadSelectedRoom:
     db "Load selected room", $00
 TEXT_EraseAll:
@@ -2152,7 +2230,7 @@ TEXT_708:
     db $00
 
 Credits:
-    db "ActRaiser Practice ROM v0.4", $0D
+    db "ActRaiser Practice ROM v0.5", $0D
     db "Osteoclave", $0D
-    db "2020-10-26"
+    db "2020-12-19"
     db $00
